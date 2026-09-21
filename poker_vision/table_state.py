@@ -8,7 +8,9 @@ class Seat:
     seat_id: str          # e.g. "top_left" (screen position slot, stable across hands)
     name: Optional[str] = None
     stack: Optional[float] = None
-    position: Optional[str] = None      # "D" / "SB" / "BB" / None
+    position: Optional[str] = None      # "D" / "SB" / "BB" (badge OCR) or a
+                                         # standard name like "UTG" / "HJ" /
+                                         # "CO" (inferred, see parser.infer_positions) / None
     status: Optional[str] = None        # "Folded" / "Call" / "Raise" / "Check" / "Sitting Out" / ...
     in_hand: bool = False
     is_hero: bool = False

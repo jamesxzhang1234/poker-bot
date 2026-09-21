@@ -22,8 +22,34 @@ def _is_occupied(seat):
     return bool(seat.name) or seat.stack is not None or seat.in_hand
 
 
+
+# Standard poker position names for the seats between BB and the button, in
+# action order (closest to BB first), keyed by how many such seats there
+# are. Matches common charts (6-max = UTG,HJ,CO; 9-max = UTG,UTG+1,UTG+2,
+# LJ,HJ,CO); this game's seat layout maxes out at 9 total seats (8 opponent
+# slots + hero), so 6 is the largest key needed (9 - D - SB - BB).
+_MIDDLE_POSITION_NAMES = {
+    0: [],
+    1: ["UTG"],
+    2: ["UTG", "CO"],
+    3: ["UTG", "HJ", "CO"],
+    4: ["UTG", "UTG+1", "HJ", "CO"],
+    5: ["UTG", "UTG+1", "LJ", "HJ", "CO"],
+    6: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO"],
+}
+
+
+def _middle_position_names(seats_between):
+    if seats_between in _MIDDLE_POSITION_NAMES:
+        return _MIDDLE_POSITION_NAMES[seats_between]
+    # Beyond this game's 9-seat max (shouldn't happen) -- extrapolate with
+    # plain UTG+k numbering rather than guessing at further named slots.
+    return ["UTG"] + [f"UTG+{i}" for i in range(1, seats_between)]
+
+
 def infer_positions(seats):
-    """Fill in a seat's D/SB/BB label from another seat's badge in the same
+    """Fill in each occupied seat's poker position (D/SB/BB, then
+    UTG/.../HJ/CO for the rest) from another seat's badge in the same
     frame, when that seat's own badge OCR came back empty.
 
     Single-frame only (no history across screenshots): rotates through the
@@ -36,7 +62,8 @@ def infer_positions(seats):
     """
     by_id = {s.seat_id: s for s in seats}
     occupied_order = [sid for sid in regions.SEAT_ORDER if sid in by_id and _is_occupied(by_id[sid])]
-    if len(occupied_order) < 3:
+    n = len(occupied_order)
+    if n < 3:
         return seats
 
     anchor_id = anchor_role = None
@@ -53,10 +80,13 @@ def infer_positions(seats):
     # inferred assignment rather than duplicate the role onto a second seat.
     roles_taken = {s.position for s in seats if s.position in _RANK_ROLES}
 
-    n = len(occupied_order)
+    names_by_rank = {rank: role for role, rank in _RANK_ROLES.items()}
+    for i, name in enumerate(_middle_position_names(n - 3)):
+        names_by_rank[3 + i] = name
+
     anchor_idx = occupied_order.index(anchor_id)
     anchor_rank = _RANK_ROLES[anchor_role]
-    for role, rank in _RANK_ROLES.items():
+    for rank, role in names_by_rank.items():
         if role in roles_taken:
             continue
         sid = occupied_order[(anchor_idx + (rank - anchor_rank)) % n]
