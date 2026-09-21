@@ -122,18 +122,25 @@ RANK_OFFSET = (15, 8, 60, 60)  # (dx1, dy1, dx2, dy2) relative to slot's (x1, y1
 
 POT_BOX = (470, 955, 735, 1040)
 
-# Seat draw order matches typical clock position starting top-left, used when
-# assigning relative position labels (BTN/SB/BB/...) if no badge is detected.
+# Action-order direction around the table (D -> SB -> BB -> UTG -> ... -> back
+# to D), i.e. the direction seats are dealt to, not raw screen position.
+# Confirmed against a real session: top_right BB implies mid_right is UTG,
+# which only holds in this direction (the reverse of a naive top-left-first
+# reading of on-screen seat position). Used to fill in a seat's D/SB/BB
+# label from another seat's successfully-read badge in the same frame, by
+# rotating through the occupied seats -- see parser.infer_positions().
+# Confirmed on limited data (a handful of real hands); may need correcting
+# if it produces a wrong label on a hand shape not yet seen.
 SEAT_ORDER = [
-    "top_left",
-    "mid_left",
-    "lower_mid_left",
-    "bottom_left",
-    "hero",
-    "bottom_right",
-    "lower_mid_right",
-    "mid_right",
     "top_right",
+    "mid_right",
+    "lower_mid_right",
+    "bottom_right",
+    "hero",
+    "bottom_left",
+    "lower_mid_left",
+    "mid_left",
+    "top_left",
 ]
 
 

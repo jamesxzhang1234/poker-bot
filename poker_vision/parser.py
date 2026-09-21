@@ -15,6 +15,57 @@ def _crop(frame, box_ref):
     return frame[y1:y2, x1:x2]
 
 
+_RANK_ROLES = {"D": 0, "SB": 1, "BB": 2}
+
+
+def _is_occupied(seat):
+    return bool(seat.name) or seat.stack is not None or seat.in_hand
+
+
+def infer_positions(seats):
+    """Fill in a seat's D/SB/BB label from another seat's badge in the same
+    frame, when that seat's own badge OCR came back empty.
+
+    Single-frame only (no history across screenshots): rotates through the
+    occupied seats in regions.SEAT_ORDER's action-order direction, anchored
+    on whichever seat had ANY position successfully read by OCR. Never
+    overwrites a position OCR already found, and never assigns one to a
+    seat with no player in it. Heads-up (exactly 2 occupied seats, where
+    the dealer also posts the small blind) is out of scope -- unverified,
+    revisit if it comes up.
+    """
+    by_id = {s.seat_id: s for s in seats}
+    occupied_order = [sid for sid in regions.SEAT_ORDER if sid in by_id and _is_occupied(by_id[sid])]
+    if len(occupied_order) < 3:
+        return seats
+
+    anchor_id = anchor_role = None
+    for sid in occupied_order:
+        pos = by_id[sid].position
+        if pos in _RANK_ROLES:
+            anchor_id, anchor_role = sid, pos
+            break
+    if anchor_id is None:
+        return seats
+
+    # A role already held by some other seat's own OCR read means the
+    # rotation model doesn't fit this hand's occupied-seat set -- drop that
+    # inferred assignment rather than duplicate the role onto a second seat.
+    roles_taken = {s.position for s in seats if s.position in _RANK_ROLES}
+
+    n = len(occupied_order)
+    anchor_idx = occupied_order.index(anchor_id)
+    anchor_rank = _RANK_ROLES[anchor_role]
+    for role, rank in _RANK_ROLES.items():
+        if role in roles_taken:
+            continue
+        sid = occupied_order[(anchor_idx + (rank - anchor_rank)) % n]
+        seat = by_id[sid]
+        if seat.position is None:
+            seat.position = role
+    return seats
+
+
 class TableParser:
     def __init__(self):
         self.seat_defs = regions.SEATS
@@ -67,6 +118,7 @@ class TableParser:
 
     def parse(self, frame, frame_index=0, timestamp_sec=0.0):
         seats = [self.parse_seat(frame, seat_id) for seat_id in self.seat_defs]
+        seats = infer_positions(seats)
         board = self.parse_board(frame)
         pot = self.parse_pot(frame)
         return TableState(
