@@ -68,6 +68,43 @@ def ocr_name(crop):
     return text
 
 
+def _insert_geometric_decimal(mask, digit_text):
+    """If Tesseract dropped the decimal point (common failure mode: the
+    glyph is only a few pixels tall against ~25px digit strokes, so it
+    gets discarded as noise -- confirmed by inspecting a real misread
+    crop), find it directly as a small connected component instead of
+    relying on Tesseract to recognize it as a character, and splice '.'
+    into digit_text at the matching position. Returns digit_text
+    unchanged if no such component is found (e.g. genuinely no decimal
+    point, or this psm's read already includes one).
+    """
+    if "." in digit_text or not digit_text.isdigit():
+        return digit_text
+    ch, cw = mask.shape
+    inv = (mask == 0).astype(np.uint8) * 255
+    n, _, stats, _ = cv2.connectedComponentsWithStats(inv, connectivity=8)
+    # Drop decorative border components spanning most of the crop width --
+    # this UI draws a horizontal gold border across the whole stack-row
+    # crop, which would otherwise dominate the height comparison below.
+    comps = [(x, y, w, h) for i, (x, y, w, h, area) in enumerate(stats)
+             if i > 0 and w < cw * 0.6]
+    if not comps:
+        return digit_text
+    max_h = max(h for (x, y, w, h) in comps)
+    dots = [(x, y, w, h) for (x, y, w, h) in comps if h < max_h * 0.35]
+    digit_glyphs = sorted(
+        [(x, y, w, h) for (x, y, w, h) in comps if h >= max_h * 0.6],
+        key=lambda c: c[0],
+    )
+    if not dots or len(digit_glyphs) < 2:
+        return digit_text
+    dot_x = dots[0][0]
+    n_left = sum(1 for (x, y, w, h) in digit_glyphs if x < dot_x)
+    if 0 < n_left < len(digit_text):
+        return digit_text[:n_left] + "." + digit_text[n_left:]
+    return digit_text
+
+
 def ocr_number(crop):
     """OCR a stack/pot/bet amount and return it as a float, or None.
 
@@ -83,8 +120,9 @@ def ocr_number(crop):
         text = _ocr(mask, whitelist="0123456789.", psm=psm)
         match = re.search(r"\d+(\.\d+)?", text)
         if match:
+            digit_text = _insert_geometric_decimal(mask, match.group(0))
             try:
-                return float(match.group(0))
+                return float(digit_text)
             except ValueError:
                 continue
     return None
