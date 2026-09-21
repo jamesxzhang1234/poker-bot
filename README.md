@@ -44,60 +44,41 @@ Each output line is a JSON object:
 lower_mid_left, lower_mid_right, bottom_left, bottom_right, hero) -- stable
 across hands, since players don't visually rotate seats in this client.
 
-## Live mode (screen-shared phone)
+## Live mode (phone screenshot push)
 
-`live_app.py` opens a live source, parses it in the background (parsing is
-OCR-heavy so it doesn't run every frame), and shows an annotated view plus a
-live-updating panel of everything it's reading. Press `q` to quit, `p` to
-force an immediate re-parse.
-
-```
-python -m poker_vision.live_app --source <SOURCE> --parse-interval 1.5
-```
-
-**Getting your phone's screen into a `<SOURCE>` Python can read:**
-
-Important: `python -m poker_vision.capture --list` (via ffmpeg) and OpenCV's
-own device numbering **do not match** -- OpenCV's AVFoundation backend
-silently excludes some device types (seen on this machine: it dropped "Desk
-View Camera" and "Capture screen 0" entirely, leaving only 3 of ffmpeg's 5
-devices). So always find the right index with the OpenCV-based probe tool,
-never from the ffmpeg list:
+Screenshots taken on the phone are pushed automatically to a local Flask
+server, which parses each one as it arrives and prints the table state to
+stdout.
 
 ```
-python tools/probe_cameras.py
+python -m poker_vision.server
 ```
 
-This opens every index 0-8 through the same backend `live_app.py` uses,
-saves a snapshot from each one that opens, and prints their indices/shapes.
-Open the snapshots in `frames/crops/probe/` and see which index (if any)
-shows the poker table.
+This listens on `http://0.0.0.0:8765/upload`.
 
-1. **Try the iPhone device first**: start QuickTime's "New Movie Recording"
-   with the iPhone selected as camera (so Continuity Camera is actively
-   streaming), then run the probe again and check that index's snapshot --
-   it may show the phone's screen, or it may just show the physical camera
-   lens's view. Either way you'll be able to tell from the image.
-2. **OBS Virtual Camera (most reliable)**: in OBS, add a "macOS Screen
-   Capture" or "Window Capture" source pointed at the QuickTime preview
-   window so OBS is actually outputting that video, click "Start Virtual
-   Camera", then re-run the probe -- the OBS Virtual Camera index's snapshot
-   should now show the QuickTime window instead of the OBS placeholder logo.
-3. **Screen region (no OBS needed)**: keep the QuickTime window in a fixed
-   spot, run `python tools/select_region.py`, drag a box around just the
-   phone screen inside the window, and use the `region:x,y,w,h` string it
-   prints, e.g. `--source region:100,100,600,1300`.
+**One-time iOS setup:** Settings -> Shortcuts -> Automation -> "When I Take
+a Screenshot" -> action "Get Contents of URL", method POST, request body =
+the screenshot. Turn off "Ask Before Running" so it fires silently. Point
+the URL at `http://<your-mac's-local-ip>:8765/upload` -- find your Mac's IP
+with `ipconfig getifaddr en0` (or whichever interface is active). If your
+router supports a DHCP reservation for the Mac, use it so this URL doesn't
+break when the IP changes.
 
-Once you know the right index, run the live app with e.g. `--source camera:2`.
+**Testing without the phone:** POST a saved screenshot directly:
 
-Whichever source you use, **the frame must be just the phone's poker
-screen** (no window title bar / other chrome) for the calibrated regions in
-`regions.py` to line up -- crop tightly in OBS/QuickTime or size the region
-box precisely.
+```
+curl -X POST --data-binary @frames/frame_001.png http://localhost:8765/upload
+```
 
-**First run**: macOS will ask for Camera and/or Screen Recording permission
-for your terminal app the first time you run this -- grant both in System
-Settings -> Privacy & Security, then re-run.
+You should see a parsed summary printed within a couple of seconds.
+
+Whichever way a frame arrives, **the screenshot must be just the phone's
+poker screen** (no browser chrome / other UI) for the calibrated regions in
+`regions.py` to line up.
+
+**First run**: macOS may prompt for local network permission for your
+terminal app the first time the server receives a connection -- grant it in
+System Settings -> Privacy & Security.
 
 ## How it works
 
@@ -134,3 +115,8 @@ Settings -> Privacy & Security, then re-run.
 - Calibration is specific to this PurePoker portrait layout (1206x2622). A
   different client, orientation, or major app redesign will need re-running
   the calibration tools in `tools/`.
+- **Recalibration after switching to native screenshots**: `regions.py` was
+  originally calibrated against QuickTime-mirrored frames. Native iOS
+  screenshots may differ slightly in resolution/cropping -- re-run
+  `tools/region_preview.py` against a real screenshot and adjust
+  `regions.py` if the region boxes don't line up.
