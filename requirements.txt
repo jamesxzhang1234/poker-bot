@@ -4,3 +4,4 @@ pytesseract
 pillow
 mss
 pytest
+flask
