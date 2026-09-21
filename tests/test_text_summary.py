@@ -12,7 +12,7 @@ def test_format_summary_includes_pot_and_board():
     out = format_summary(state)
     assert "frame 3" in out
     assert "Pot: 45.0" in out
-    assert "Board: 7c 3d 6c" in out
+    assert "Board: 7♣ 3♦ 6♣" in out
 
 
 def test_format_summary_lists_seats_with_details():
@@ -52,7 +52,33 @@ def test_format_summary_lists_seats_with_details():
     assert "$17.2" in out
     assert "(Folded)" in out
     assert "HERO" in out
-    assert "Ah Kd" in out
+    assert "A♥ K♦" in out
+
+
+def test_format_summary_maps_all_four_suit_letters_to_symbols():
+    state = {
+        "frame_index": 0,
+        "timestamp_sec": 0.0,
+        "pot": None,
+        "board_cards": ["2c", "3d", "4h", "5s"],
+        "seats": [],
+    }
+    out = format_summary(state)
+    assert "Board: 2♣ 3♦ 4♥ 5♠" in out
+
+
+def test_format_summary_leaves_unrecognized_card_code_untouched():
+    # Defensive: an unexpected code (e.g. a future rank/suit this map
+    # doesn't know) should pass through as-is rather than crash or mangle.
+    state = {
+        "frame_index": 0,
+        "timestamp_sec": 0.0,
+        "pot": None,
+        "board_cards": ["??"],
+        "seats": [],
+    }
+    out = format_summary(state)
+    assert "Board: ??" in out
 
 
 def _seat(seat_id, position):

@@ -6,6 +6,15 @@ human-readable summary for the server's stdout output.
 # SB, BB, ... around to CO) -- matches parser.infer_positions's naming.
 _POSITION_ORDER = ["D", "SB", "BB", "UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO"]
 
+# Suit letter -> symbol, matching card_vision.classify_suit's codes.
+_SUIT_SYMBOLS = {"c": "♣", "d": "♦", "h": "♥", "s": "♠"}
+
+
+def _format_card(card):
+    if card and card[-1] in _SUIT_SYMBOLS:
+        return card[:-1] + _SUIT_SYMBOLS[card[-1]]
+    return card
+
 
 def _position_rank(position):
     if position in _POSITION_ORDER:
@@ -25,7 +34,7 @@ def format_summary(state):
     lines.append(f"Pot: {pot if pot is not None else '?'}")
 
     board = state.get("board_cards") or []
-    lines.append(f"Board: {' '.join(board) if board else '(none)'}")
+    lines.append(f"Board: {' '.join(_format_card(c) for c in board) if board else '(none)'}")
 
     seats = sorted(state.get("seats", []), key=lambda s: _position_rank(s.get("position")))
     for seat in seats:
@@ -40,7 +49,7 @@ def format_summary(state):
         if seat.get("status"):
             parts.append(f"({seat['status']})")
         if seat.get("hole_cards"):
-            parts.append(" ".join(seat["hole_cards"]))
+            parts.append(" ".join(_format_card(c) for c in seat["hole_cards"]))
         lines.append("  " + " ".join(parts))
 
     return "\n".join(lines)
