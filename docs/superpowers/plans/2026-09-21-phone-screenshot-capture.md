@@ -529,10 +529,10 @@ With the PurePoker table visible on the phone, take a screenshot. Confirm: withi
 - [ ] **Step 5: Check region calibration against the real screenshot**
 
 ```bash
-cd ~/Desktop/Poker && source venv/bin/activate && python tools/region_preview.py frames/incoming/<latest-file>.jpg
+cd ~/Desktop/Poker && source venv/bin/activate && python tools/region_preview.py frames/incoming/<latest-file>.jpg /tmp/preview.png
 ```
 
-(Use the actual filename from Step 4.) Confirm the drawn region boxes line up with the seats/cards/pot in the image. If they're off, adjust `poker_vision/regions.py` — this is exploratory follow-up work, not covered by this plan's tasks, since the fix depends on what's actually misaligned.
+(Use the actual filename from Step 4; the second argument is the output image path.) Confirm the drawn region boxes line up with the seats/cards/pot in the image. If they're off, adjust `poker_vision/regions.py` — this is exploratory follow-up work, not covered by this plan's tasks, since the fix depends on what's actually misaligned.
 
 - [ ] **Step 6: Stop the server**
 
