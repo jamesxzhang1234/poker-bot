@@ -68,6 +68,109 @@ def ocr_name(crop):
     return text
 
 
+def _text_components(mask):
+    """Connected components of the dark (text) pixels in a black-text-on-
+    white mask, split into digit-height glyphs and everything smaller,
+    with decorative border components (spanning most of the crop's width --
+    this UI draws a horizontal gold border across the whole stack-row crop)
+    already excluded. Returns (digit_glyphs, small_components, max_h), each
+    glyph/component as (x, y, w, h), glyphs sorted left to right.
+    """
+    ch, cw = mask.shape
+    inv = (mask == 0).astype(np.uint8) * 255
+    _, _, stats, _ = cv2.connectedComponentsWithStats(inv, connectivity=8)
+    # w < cw*0.6 drops decorative borders spanning most of the crop width.
+    # w >= 3 drops thin edge-artifact slivers (seen: a 1px-wide line taller
+    # than the real digits, which -- being tallest -- corrupted max_h and
+    # got miscounted as an extra digit glyph).
+    comps = [(x, y, w, h) for i, (x, y, w, h, area) in enumerate(stats)
+             if i > 0 and 3 <= w < cw * 0.6]
+    if not comps:
+        return [], [], 0
+    max_h = max(h for (x, y, w, h) in comps)
+    digit_glyphs = sorted([c for c in comps if c[3] >= max_h * 0.6], key=lambda c: c[0])
+    small = [c for c in comps if c[3] < max_h * 0.35]
+    return digit_glyphs, small, max_h
+
+
+def _find_decimal_point(digit_glyphs, small, max_h):
+    """Pick the decimal point out of `small`, disambiguating it from other
+    small components that show up in the same size band: decorative UI
+    chrome (sits well above the digit line) and a digit's own disconnected
+    descender fragment (sits directly under that digit's own x-span).
+    A true decimal point sits low, near the digit baseline, AND in the
+    horizontal gap *between* two digit glyphs -- confirmed against a real
+    misread where a border decoration got picked as "the dot" instead of
+    the real one, because it was simply the first small component found.
+    Returns the dot's x-coordinate, or None if no candidate fits.
+    """
+    if len(digit_glyphs) < 2:
+        return None
+    digit_bottom = max(y + h for (x, y, w, h) in digit_glyphs)
+
+    def in_gap(cx):
+        for i in range(len(digit_glyphs) - 1):
+            left_end = digit_glyphs[i][0] + digit_glyphs[i][2]
+            right_start = digit_glyphs[i + 1][0]
+            if left_end < cx < right_start:
+                return True
+        return False
+
+    for x, y, w, h in small:
+        if y + h > digit_bottom - max_h * 0.5 and in_gap(x + w / 2):
+            return x
+    return None
+
+
+def _insert_decimal(digit_text, digit_glyphs, dot_x):
+    n_left = sum(1 for (x, y, w, h) in digit_glyphs if x < dot_x)
+    if 0 < n_left < len(digit_text):
+        return digit_text[:n_left] + "." + digit_text[n_left:]
+    return digit_text
+
+
+# This game's font renders '9' as a near-closed loop with only a short
+# tail, which Tesseract sometimes classifies as one of these letters
+# instead when constrained to the digit whitelist -- confirmed against a
+# real misread crop ("9.55" whitelisted-OCR'd as just "55", but the same
+# crop unconstrained read "O55"). The whitelisted pass then just drops the
+# glyph rather than coercing it to the nearest digit, silently shortening
+# the read. Substituting on the *whole-string* unconstrained read (rather
+# than isolating and re-OCRing the single glyph, which loses the
+# surrounding-text context Tesseract needs and fails outright even on an
+# unambiguous glyph -- tried first, ruled out) recovers it.
+_DIGIT_CONFUSIONS = str.maketrans({"O": "9", "Q": "9", "o": "9", "q": "9"})
+
+
+def _recover_dropped_digit(mask, digit_text, expected_digits, psm):
+    """If the whitelisted read has fewer digits than there are actual
+    digit-height glyphs in the mask, re-OCR the same crop unconstrained,
+    substitute this font's known look-alikes for '9' back in, and use
+    that instead if the *entire* unconstrained read becomes clean digits
+    (+ optional dot) once substituted, accounting for every glyph.
+
+    Requiring the whole string to match (not just finding a same-length
+    digit run somewhere inside it via re.search) matters: a real misread
+    once produced unconstrained text "B14" for a true "5.1" (2 real
+    glyphs) -- re.search happily found "14" as a plausible-length digit
+    run and returned it, silently fabricating a wrong number ("1.4")
+    that looked just as plausible as the right one. "B" has no known
+    confusion mapping, so requiring the whole string to resolve cleanly
+    correctly rejects that case instead of guessing.
+
+    Falls back to the original digit_text if the substituted read still
+    doesn't fully resolve, rather than risk assembling a wrong number.
+    """
+    if len(digit_text.replace(".", "")) >= expected_digits:
+        return digit_text
+    raw = _ocr(mask, psm=psm)
+    subbed = raw.translate(_DIGIT_CONFUSIONS)
+    match = re.fullmatch(r"\d+(\.\d+)?", subbed)
+    if match and len(match.group(0).replace(".", "")) >= expected_digits:
+        return match.group(0)
+    return digit_text
+
+
 def _insert_geometric_decimal(mask, digit_text):
     """If Tesseract dropped the decimal point (common failure mode: the
     glyph is only a few pixels tall against ~25px digit strokes, so it
@@ -80,29 +183,11 @@ def _insert_geometric_decimal(mask, digit_text):
     """
     if "." in digit_text or not digit_text.isdigit():
         return digit_text
-    ch, cw = mask.shape
-    inv = (mask == 0).astype(np.uint8) * 255
-    n, _, stats, _ = cv2.connectedComponentsWithStats(inv, connectivity=8)
-    # Drop decorative border components spanning most of the crop width --
-    # this UI draws a horizontal gold border across the whole stack-row
-    # crop, which would otherwise dominate the height comparison below.
-    comps = [(x, y, w, h) for i, (x, y, w, h, area) in enumerate(stats)
-             if i > 0 and w < cw * 0.6]
-    if not comps:
+    digit_glyphs, small, max_h = _text_components(mask)
+    dot_x = _find_decimal_point(digit_glyphs, small, max_h)
+    if dot_x is None:
         return digit_text
-    max_h = max(h for (x, y, w, h) in comps)
-    dots = [(x, y, w, h) for (x, y, w, h) in comps if h < max_h * 0.35]
-    digit_glyphs = sorted(
-        [(x, y, w, h) for (x, y, w, h) in comps if h >= max_h * 0.6],
-        key=lambda c: c[0],
-    )
-    if not dots or len(digit_glyphs) < 2:
-        return digit_text
-    dot_x = dots[0][0]
-    n_left = sum(1 for (x, y, w, h) in digit_glyphs if x < dot_x)
-    if 0 < n_left < len(digit_text):
-        return digit_text[:n_left] + "." + digit_text[n_left:]
-    return digit_text
+    return _insert_decimal(digit_text, digit_glyphs, dot_x)
 
 
 def ocr_number(crop):
@@ -116,11 +201,15 @@ def ocr_number(crop):
     if crop is None or crop.size == 0:
         return None
     mask = name_stack_mask(crop)
+    digit_glyphs, _, _ = _text_components(mask)
+    expected_digits = len(digit_glyphs)
     for psm in (6, 7, 11, 3):
         text = _ocr(mask, whitelist="0123456789.", psm=psm)
         match = re.search(r"\d+(\.\d+)?", text)
-        if match:
-            digit_text = _insert_geometric_decimal(mask, match.group(0))
+        digit_text = match.group(0) if match else ""
+        digit_text = _recover_dropped_digit(mask, digit_text, expected_digits, psm)
+        if digit_text:
+            digit_text = _insert_geometric_decimal(mask, digit_text)
             try:
                 return float(digit_text)
             except ValueError:
