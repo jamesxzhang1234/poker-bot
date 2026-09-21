@@ -31,3 +31,20 @@ class TableState:
             "board_cards": self.board_cards,
             "seats": [asdict(s) for s in self.seats],
         }
+
+
+def is_plausible_table(state, min_seats_with_stack=4):
+    """Whether a parsed TableState dict (see TableState.to_dict()) plausibly
+    came from a real PurePoker table screenshot, as opposed to some other
+    screen on the phone.
+
+    Stack-amount OCR only succeeds on a real table (it needs a specific
+    numeric pattern at a specific pixel position per seat), so it almost
+    never false-positives on unrelated screen content -- unlike name OCR
+    or the card-presence heuristic, which do pick up noise elsewhere.
+    Empirically, real table screenshots show 5-6 of 9 seats with a
+    detected stack; unrelated screenshots show 0. Default threshold of 4
+    leaves margin on both sides.
+    """
+    seats_with_stack = sum(1 for s in state["seats"] if s["stack"] is not None)
+    return seats_with_stack >= min_seats_with_stack

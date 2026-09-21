@@ -17,6 +17,7 @@ import cv2
 from flask import Flask, request
 
 from .parser import TableParser
+from .table_state import is_plausible_table
 from .text_summary import format_summary
 
 DEFAULT_INCOMING_DIR = Path("frames/incoming")
@@ -60,8 +61,12 @@ def worker_loop(work_queue, parser_factory=TableParser, frame_index_start=0):
         except Exception as exc:
             print(f"[parse error] {exc}")
             continue
+        state_dict = state.to_dict()
+        if not is_plausible_table(state_dict):
+            print(f"[skipped] not a PurePoker table screenshot: {path}")
+            continue
         frame_index += 1
-        print(format_summary(state.to_dict()))
+        print(format_summary(state_dict))
 
 
 def main():

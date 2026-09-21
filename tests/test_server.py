@@ -59,7 +59,7 @@ class _FakeParser:
             "timestamp_sec": timestamp_sec,
             "pot": 10.0,
             "board_cards": [],
-            "seats": [],
+            "seats": [{"stack": 5.0} for _ in range(4)],
         })
 
 
@@ -75,6 +75,32 @@ def test_worker_loop_prints_summary_for_valid_image(tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "Pot: 10.0" in out
+
+
+class _ImplausibleParser:
+    def parse(self, frame, frame_index=0, timestamp_sec=0.0):
+        return _FakeState({
+            "frame_index": frame_index,
+            "timestamp_sec": timestamp_sec,
+            "pot": None,
+            "board_cards": [],
+            "seats": [{"stack": None} for _ in range(9)],
+        })
+
+
+def test_worker_loop_skips_implausible_table(tmp_path, capsys):
+    img_path = tmp_path / "frame.jpg"
+    cv2.imwrite(str(img_path), np.zeros((10, 10, 3), dtype=np.uint8))
+
+    work_queue = queue.Queue()
+    work_queue.put(str(img_path))
+    work_queue.put(None)
+
+    worker_loop(work_queue, parser_factory=_ImplausibleParser)
+
+    out = capsys.readouterr().out
+    assert "[skipped]" in out
+    assert "Pot:" not in out
 
 
 class _RaisingParser:
