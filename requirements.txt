@@ -3,3 +3,4 @@ numpy
 pytesseract
 pillow
 mss
+pytest
