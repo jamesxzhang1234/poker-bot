@@ -53,3 +53,38 @@ def test_format_summary_lists_seats_with_details():
     assert "(Folded)" in out
     assert "HERO" in out
     assert "Ah Kd" in out
+
+
+def _seat(seat_id, position):
+    return {
+        "seat_id": seat_id,
+        "name": seat_id,
+        "stack": 10.0,
+        "position": position,
+        "status": None,
+        "in_hand": True,
+        "is_hero": False,
+        "hole_cards": [],
+    }
+
+
+def test_format_summary_orders_seats_by_poker_position_not_input_order():
+    state = {
+        "frame_index": 0,
+        "timestamp_sec": 0.0,
+        "pot": None,
+        "board_cards": [],
+        "seats": [
+            _seat("bottom_left", "CO"),
+            _seat("mid_right", "BB"),
+            _seat("top_left", "D"),
+            _seat("hero", None),
+            _seat("lower_mid_right", "SB"),
+            _seat("top_right", "UTG"),
+        ],
+    }
+    out = format_summary(state)
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
+    seat_order = [line.split()[0] for line in lines if line.split()[0] in
+                  ("top_left", "mid_right", "bottom_left", "hero", "lower_mid_right", "top_right")]
+    assert seat_order == ["top_left", "lower_mid_right", "mid_right", "top_right", "bottom_left", "hero"]

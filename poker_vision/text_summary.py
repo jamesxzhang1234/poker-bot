@@ -2,6 +2,21 @@
 human-readable summary for the server's stdout output.
 """
 
+# Action-order reference for sorting the printed seat list (D first, then
+# SB, BB, ... around to CO) -- matches parser.infer_positions's naming.
+_POSITION_ORDER = ["D", "SB", "BB", "UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO"]
+
+
+def _position_rank(position):
+    if position in _POSITION_ORDER:
+        return _POSITION_ORDER.index(position)
+    if position and position.startswith("UTG+"):
+        try:
+            return 3 + int(position.split("+", 1)[1])
+        except ValueError:
+            pass
+    return len(_POSITION_ORDER)  # unknown/unset position sorts last
+
 
 def format_summary(state):
     lines = [f"--- frame {state['frame_index']} @ {state['timestamp_sec']:.1f}s ---"]
@@ -12,7 +27,8 @@ def format_summary(state):
     board = state.get("board_cards") or []
     lines.append(f"Board: {' '.join(board) if board else '(none)'}")
 
-    for seat in state.get("seats", []):
+    seats = sorted(state.get("seats", []), key=lambda s: _position_rank(s.get("position")))
+    for seat in seats:
         tag = "HERO" if seat.get("is_hero") else seat.get("seat_id", "?")
         parts = [tag]
         if seat.get("name"):
