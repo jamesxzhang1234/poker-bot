@@ -1,9 +1,11 @@
+import json
 import queue
 
 import cv2
 import numpy as np
+import pytest
 
-from poker_vision.server import create_app, worker_loop
+from poker_vision.server import create_app, parse_blinds, worker_loop, write_session_info
 
 
 def test_upload_writes_file_and_enqueues_path(tmp_path):
@@ -120,3 +122,28 @@ def test_worker_loop_logs_parse_error_when_parser_raises(tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "[parse error] boom" in out
+
+
+def test_parse_blinds_accepts_integer_sb_bb():
+    assert parse_blinds("1/2") == (1.0, 2.0)
+
+
+def test_parse_blinds_accepts_decimal_sb_bb():
+    assert parse_blinds("0.05/0.1") == (0.05, 0.1)
+
+
+@pytest.mark.parametrize("bad", ["abc", "1-2", "1/2/3", "/2", "1/"])
+def test_parse_blinds_rejects_malformed_input(bad):
+    with pytest.raises(ValueError):
+        parse_blinds(bad)
+
+
+def test_write_session_info_persists_blinds_as_json(tmp_path):
+    path = tmp_path / "session.json"
+
+    write_session_info(path, blinds_raw="1/2", small_blind=1.0, big_blind=2.0)
+
+    data = json.loads(path.read_text())
+    assert data["blinds"] == "1/2"
+    assert data["small_blind"] == 1.0
+    assert data["big_blind"] == 2.0

@@ -7,7 +7,10 @@ See docs/superpowers/specs/2026-09-21-phone-screenshot-capture-design.md.
 Usage:
     python -m poker_vision.server
 """
+import argparse
+import json
 import queue
+import re
 import threading
 import time
 from datetime import datetime
@@ -21,6 +24,32 @@ from .table_state import is_plausible_table
 from .text_summary import format_summary
 
 DEFAULT_INCOMING_DIR = Path("frames/incoming")
+DEFAULT_SESSION_FILE = Path("frames/session.json")
+
+_BLINDS_PATTERN = re.compile(r"^(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)$")
+
+
+def parse_blinds(text):
+    """Parse a 'SB/BB' blind-size string (e.g. '1/2') into (sb, bb) floats.
+    Raises ValueError with a clear message on malformed input."""
+    match = _BLINDS_PATTERN.match(text.strip())
+    if not match:
+        raise ValueError(f"blinds must be in SB/BB format like '1/2', got {text!r}")
+    return float(match.group(1)), float(match.group(2))
+
+
+def write_session_info(path, blinds_raw, small_blind, big_blind):
+    """Persist the operator-provided blind sizes for this capture session
+    so a later consumer (e.g. a future decision/solver component) can read
+    them without re-parsing the command line."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "blinds": blinds_raw,
+        "small_blind": small_blind,
+        "big_blind": big_blind,
+        "started_at": datetime.now().isoformat(),
+    }, indent=2))
 
 
 def create_app(incoming_dir, work_queue):
@@ -70,6 +99,18 @@ def worker_loop(work_queue, parser_factory=TableParser, frame_index_start=0):
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--blinds", help="Blind sizes as SB/BB, e.g. 1/2")
+    args = ap.parse_args()
+
+    if args.blinds:
+        try:
+            small_blind, big_blind = parse_blinds(args.blinds)
+        except ValueError as exc:
+            raise SystemExit(str(exc))
+        write_session_info(DEFAULT_SESSION_FILE, args.blinds, small_blind, big_blind)
+        print(f"Blinds set to {args.blinds} (SB={small_blind}, BB={big_blind}) -- saved to {DEFAULT_SESSION_FILE}")
+
     work_queue = queue.Queue()
     app = create_app(DEFAULT_INCOMING_DIR, work_queue)
 
