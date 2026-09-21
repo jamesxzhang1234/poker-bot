@@ -1,0 +1,7 @@
+venv/
+frames/
+poker_vision/output/
+__pycache__/
+*.pyc
+.DS_Store
+PurePoker Gameplay/
