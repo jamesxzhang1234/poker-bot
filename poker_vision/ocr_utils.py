@@ -90,14 +90,50 @@ def ocr_number(crop):
     return None
 
 
+def badge_mask(crop):
+    """Isolate the D/SB/BB letter inside a position badge (a light-blue
+    filled circle with darker-navy letter text).
+
+    white_mask doesn't work here: the circle's own fill color (a light
+    blue, e.g. ~173,205,245) already satisfies the "white text" brightness
+    test, so it gets rendered as the text-color foreground while the
+    actual (mid-brightness) letter gets rendered as background -- exactly
+    inverted from what Tesseract needs. Instead: keep only pixels inside
+    an ellipse matching the crop (excludes background bleeding into the
+    crop's corners/edges, e.g. avatar hair) whose brightness sits in the
+    mid-band between the bright circle fill and the very dark table
+    background -- that band is the letter ink.
+    """
+    if crop is None or crop.size == 0:
+        return crop
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    ellipse_mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.ellipse(ellipse_mask, (w // 2, h // 2), (max(w // 2 - 1, 1), max(h // 2 - 1, 1)),
+                0, 0, 360, 255, -1)
+    letter = (ellipse_mask > 0) & (gray > 55) & (gray < 145)
+    binary = np.full((h, w), 255, dtype=np.uint8)
+    binary[letter] = 0
+    return binary
+
+
 def ocr_badge(crop):
-    """Return 'D', 'SB', 'BB', or None."""
+    """Return 'D', 'SB', 'BB', or None.
+
+    Different badge crops read reliably under different Tesseract
+    page-segmentation modes (empirically: psm 10 covers most cases, but
+    not all) -- try a short cascade and take the first recognized word,
+    matching the pattern already used by ocr_number.
+    """
     if crop is None or crop.size == 0:
         return None
-    text = _ocr(white_mask(crop), whitelist="SBD", psm=6).upper()
-    for word in _BADGE_WORDS:
-        if word in text:
-            return word
+    mask = badge_mask(crop)
+    upscaled = cv2.resize(mask, (mask.shape[1] * 8, mask.shape[0] * 8), interpolation=cv2.INTER_NEAREST)
+    for psm in (10, 8, 12, 13, 6, 11, 7):
+        text = _ocr(upscaled, whitelist="SBD", psm=psm).upper()
+        for word in _BADGE_WORDS:
+            if word in text:
+                return word
     return None
 
 

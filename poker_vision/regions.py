@@ -26,7 +26,7 @@ SEATS = {
         "cards": (120, 490, 240, 580),
         "name_row": (150, 602, 372, 660),
         "stack_row": (150, 660, 372, 718),
-        "badge": (330, 375, 430, 430),
+        "badge": (405, 585, 464, 627),
         "status": (80, 340, 400, 600),
     },
     "top_right": {
@@ -34,7 +34,11 @@ SEATS = {
         "cards": (818, 505, 918, 585),
         "name_row": (832, 602, 1055, 660),
         "stack_row": (832, 660, 1055, 718),
-        "badge": (795, 370, 900, 430),
+        # Mirrored from top_left across the frame's horizontal center;
+        # no seat was ever occupied here in the calibration screenshots,
+        # so this is an unverified estimate. Recheck if a player sits
+        # here and their D/SB/BB badge isn't detected.
+        "badge": (742, 585, 801, 627),
         "status": (800, 340, 1120, 600),
     },
     "mid_left": {
@@ -42,7 +46,7 @@ SEATS = {
         "cards": (0, 860, 100, 945),
         "name_row": (28, 955, 258, 1022),
         "stack_row": (28, 1022, 258, 1090),
-        "badge": (220, 835, 300, 885),
+        "badge": (235, 741, 288, 794),
         "status": (0, 700, 280, 960),
     },
     "mid_right": {
@@ -50,7 +54,8 @@ SEATS = {
         "cards": (945, 860, 1040, 945),
         "name_row": (945, 955, 1180, 1022),
         "stack_row": (945, 1022, 1180, 1090),
-        "badge": (930, 750, 1000, 795),
+        # Mirrored from mid_left -- unverified estimate, see top_right's note.
+        "badge": (918, 741, 971, 794),
         "status": (900, 700, 1206, 960),
     },
     "lower_mid_left": {
@@ -58,7 +63,8 @@ SEATS = {
         "cards": (0, 1400, 90, 1480),
         "name_row": (0, 1500, 255, 1557),
         "stack_row": (0, 1557, 255, 1615),
-        "badge": (190, 1280, 270, 1330),
+        # Mirrored from lower_mid_right -- unverified estimate, see top_right's note.
+        "badge": (218, 1290, 285, 1346),
         "status": (0, 1150, 300, 1500),
     },
     "lower_mid_right": {
@@ -66,7 +72,7 @@ SEATS = {
         "cards": (945, 1400, 1040, 1490),
         "name_row": (945, 1490, 1180, 1558),
         "stack_row": (945, 1552, 1180, 1618),
-        "badge": (930, 1250, 1010, 1295),
+        "badge": (915, 1290, 988, 1346),
         "status": (900, 1140, 1206, 1500),
     },
     "bottom_left": {
@@ -74,7 +80,7 @@ SEATS = {
         "cards": (0, 1785, 140, 1875),
         "name_row": (68, 1885, 300, 1935),
         "stack_row": (68, 1935, 300, 1985),
-        "badge": (230, 1665, 310, 1715),
+        "badge": (54, 1661, 108, 1712),
         "status": (0, 1545, 320, 1855),
     },
     "bottom_right": {
@@ -82,7 +88,8 @@ SEATS = {
         "cards": (955, 1775, 1050, 1865),
         "name_row": (903, 1885, 1150, 1935),
         "stack_row": (903, 1935, 1150, 1985),
-        "badge": (915, 1655, 995, 1705),
+        # Mirrored from bottom_left -- unverified estimate, see top_right's note.
+        "badge": (1098, 1661, 1152, 1712),
         "status": (880, 1545, 1206, 1850),
     },
     "hero": {
@@ -90,7 +97,7 @@ SEATS = {
         "cards": None,  # hero cards are shown face-up separately, see HERO_CARDS
         "name_row": (480, 2100, 722, 2150),
         "stack_row": (480, 2155, 722, 2210),
-        "badge": (380, 1900, 820, 2100),
+        "badge": (460, 1845, 528, 1907),
         "status": (380, 1900, 820, 2100),
     },
 }
