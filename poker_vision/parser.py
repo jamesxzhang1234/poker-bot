@@ -19,7 +19,13 @@ _RANK_ROLES = {"D": 0, "SB": 1, "BB": 2}
 
 
 def _is_occupied(seat):
-    return bool(seat.name) or seat.stack is not None or seat.in_hand
+    # Deliberately excludes in_hand: the card-presence heuristic it comes
+    # from (edge density in the card-slot crop) can false-trigger on a
+    # background artifact in a genuinely empty seat -- confirmed against a
+    # real screenshot where an "Invite" (empty) seat showed in_hand=True
+    # with no name or stack, and got pulled into the rotation as a result.
+    # A real player always shows at least a name or a stack.
+    return bool(seat.name) or seat.stack is not None
 
 
 

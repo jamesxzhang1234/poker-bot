@@ -127,6 +127,25 @@ def test_assigns_standard_position_names_for_a_nine_seat_table():
     assert by_id["top_left"].position == "CO"
 
 
+def test_ignores_a_seat_with_only_in_hand_true_as_evidence():
+    # in_hand alone (no name, no stack) is not reliable occupancy evidence --
+    # the card-presence heuristic can false-trigger on a background artifact
+    # in an empty seat's crop (confirmed against a real screenshot). Such a
+    # seat must not be pulled into the rotation or given a position.
+    seats = [
+        _seat("top_right", stack=10.0, position="D"),
+        _seat("mid_right", stack=10.0),
+        Seat(seat_id="lower_mid_right", in_hand=True),  # false-positive empty seat
+        _seat("bottom_right", stack=10.0),
+    ]
+    result = infer_positions(seats)
+    by_id = {s.seat_id: s for s in result}
+    assert by_id["lower_mid_right"].position is None
+    # the real occupied seats rotate as if the empty one weren't there
+    assert by_id["mid_right"].position == "SB"
+    assert by_id["bottom_right"].position == "BB"
+
+
 def test_never_assigns_a_role_another_seat_already_holds():
     # Rotation math would put BB on "hero" here, but "bottom_left" already
     # holds BB from its own OCR read -- the model doesn't fit this hand's
