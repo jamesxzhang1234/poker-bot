@@ -129,17 +129,26 @@ def _insert_decimal(digit_text, digit_glyphs, dot_x):
     return digit_text
 
 
-# This game's font renders '9' as a near-closed loop with only a short
-# tail, which Tesseract sometimes classifies as one of these letters
-# instead when constrained to the digit whitelist -- confirmed against a
-# real misread crop ("9.55" whitelisted-OCR'd as just "55", but the same
-# crop unconstrained read "O55"). The whitelisted pass then just drops the
-# glyph rather than coercing it to the nearest digit, silently shortening
-# the read. Substituting on the *whole-string* unconstrained read (rather
-# than isolating and re-OCRing the single glyph, which loses the
-# surrounding-text context Tesseract needs and fails outright even on an
-# unambiguous glyph -- tried first, ruled out) recovers it.
-_DIGIT_CONFUSIONS = str.maketrans({"O": "9", "Q": "9", "o": "9", "q": "9"})
+# This game's font renders some digits in a way Tesseract classifies as a
+# letter instead, when constrained to the digit whitelist -- confirmed
+# against real misread crops: '9' (a near-closed loop with only a short
+# tail) read as O/Q ("9.55" whitelisted-OCR'd as just "55", unconstrained
+# read "O55"), and '4' read as A ("43.05" whitelisted-OCR'd as "205" --
+# dropping the 4 entirely -- unconstrained read "A205"). The whitelisted
+# pass then just drops the glyph rather than coercing it to the nearest
+# digit, silently shortening the read. Substituting on the *whole-string*
+# unconstrained read (rather than isolating and re-OCRing the single
+# glyph, which loses the surrounding-text context Tesseract needs and
+# fails outright even on an unambiguous glyph -- tried first, ruled out)
+# recovers it.
+#
+# Known unrecovered case: '3' is sometimes read as '2' in this font, but
+# unlike the confusions above, Tesseract gives '2' both with AND without
+# the whitelist -- there's no distinguishing signal to substitute on, so
+# a real '2' and a misread '3' are indistinguishable from OCR output
+# alone. Not solved; would need a different approach (e.g. shape analysis
+# of the glyph itself) if it turns out to matter enough.
+_DIGIT_CONFUSIONS = str.maketrans({"O": "9", "Q": "9", "o": "9", "q": "9", "A": "4", "a": "4"})
 
 
 def _recover_dropped_digit(mask, digit_text, expected_digits, psm):
