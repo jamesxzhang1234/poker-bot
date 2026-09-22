@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from poker_vision import ocr_utils
+from poker_vision import number_ocr
 
 
 def _blank_mask(w, h):
@@ -23,7 +23,7 @@ def test_text_components_ignores_a_thin_edge_artifact():
     _draw_glyph(mask, 50, 5, 17, 25)
     _draw_glyph(mask, 80, 5, 17, 25)
 
-    digit_glyphs, small, max_h = ocr_utils._text_components(mask)
+    digit_glyphs, small, max_h = number_ocr._text_components(mask)
 
     assert len(digit_glyphs) == 3
     assert max_h == 25
@@ -37,7 +37,7 @@ def test_find_decimal_point_prefers_the_gap_between_digits_over_a_border_dot():
     _draw_glyph(mask, 142, 30, 19, 25)
     _draw_glyph(mask, 107, 53, 4, 2)  # the real decimal point, low, in the gap
 
-    digit_glyphs, small, max_h = ocr_utils._text_components(mask)
-    dot_x = ocr_utils._find_decimal_point(digit_glyphs, small, max_h)
+    digit_glyphs, small, max_h = number_ocr._text_components(mask)
+    dot_x = number_ocr._find_decimal_point(digit_glyphs, small, max_h)
 
     assert dot_x == 107

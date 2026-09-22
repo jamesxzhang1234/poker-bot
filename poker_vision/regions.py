@@ -16,10 +16,11 @@ REF_H = 2622
 
 # One entry per seat around the table (8 opponent seats + hero).
 # "cards" = where face-down card backs render when a seat is still in the hand.
-# "badge" = zone(s) for the D/SB/BB position badge near the avatar. Either a
-#           single (x1,y1,x2,y2) box, or a list of candidate boxes for a seat
-#           confirmed to render the badge in more than one position (see
-#           below) -- parser.py tries each candidate in order.
+# "badge" = list of candidate (x1,y1,x2,y2) zones for the D/SB/BB position
+#           badge near the avatar, tried in order by parser.py. Seats with
+#           only one calibrated spot still get a 1-element list, so the
+#           "one box or several" distinction lives entirely in this data,
+#           not as a branch in the code that reads it.
 # "status" = generous zone spanning the action bubble (Check/Call/Raise/Bet)
 #            above the avatar and the persistent status text (Folded/Sitting
 #            Out/All-in) near the avatar's lower edge.
@@ -98,7 +99,7 @@ SEATS = {
         "cards": (0, 1785, 140, 1875),
         "name_row": (68, 1885, 300, 1935),
         "stack_row": (68, 1935, 300, 1985),
-        "badge": (54, 1661, 108, 1712),
+        "badge": [(54, 1661, 108, 1712)],
         "status": (0, 1545, 320, 1855),
     },
     "bottom_right": {
@@ -107,7 +108,7 @@ SEATS = {
         "name_row": (903, 1885, 1150, 1935),
         "stack_row": (903, 1935, 1150, 1985),
         # Mirrored from bottom_left -- unverified estimate, see top_right's note.
-        "badge": (1098, 1661, 1152, 1712),
+        "badge": [(1098, 1661, 1152, 1712)],
         "status": (880, 1545, 1206, 1850),
     },
     "hero": {
@@ -118,7 +119,7 @@ SEATS = {
         # Widened to cover both observed positions (~40px apart -- much
         # smaller than the other affected seats, so one wider box instead
         # of two candidates).
-        "badge": (415, 1845, 528, 1907),
+        "badge": [(415, 1845, 528, 1907)],
         "status": (380, 1900, 820, 2100),
     },
 }

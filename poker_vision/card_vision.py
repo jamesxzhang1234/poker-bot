@@ -1,9 +1,9 @@
 """Card recognition: suit by background color, rank by OCR on the corner glyph."""
 import cv2
 import numpy as np
-import pytesseract
 
 from . import regions
+from .ocr_utils import _cascade, _ocr
 
 # Reference BGR colors sampled from real card backgrounds (see calibration
 # notes in regions.py). Suits are color-coded by this client, so we classify
@@ -48,6 +48,25 @@ def is_card_present(crop, edge_density_threshold=0.02):
     return density > edge_density_threshold
 
 
+def _extract_rank(text):
+    """Pull a valid rank character out of a raw OCR string, or None."""
+    text = text.replace("0", "").strip()  # stray zero from a misread "10"
+    if not text:
+        return None
+    rank = text[0].upper()
+    return rank if rank in _RANK_WHITELIST else None
+
+
+def _read_rank(mask, psms):
+    """Upscale a black-text-on-white rank mask and try it under each psm in
+    `psms` in turn (ocr_utils._cascade), taking the first valid rank read.
+    Shared by _ocr_rank and _ocr_rank_bright, which differ only in how the
+    mask itself gets built and in which psm order works best for that mask.
+    """
+    upscaled = cv2.resize(mask, (mask.shape[1] * 4, mask.shape[0] * 4), interpolation=cv2.INTER_CUBIC)
+    return _cascade(psms, lambda psm: _extract_rank(_ocr(upscaled, whitelist=_RANK_WHITELIST, psm=psm)))
+
+
 def _ocr_rank(region_bgr):
     if region_bgr.size == 0:
         return None
@@ -57,22 +76,11 @@ def _ocr_rank(region_bgr):
     # overlay render at different sharpness), so an adaptive Otsu threshold
     # is more robust here than one fixed brightness cutoff.
     _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-    mask = cv2.resize(mask, (mask.shape[1] * 4, mask.shape[0] * 4), interpolation=cv2.INTER_CUBIC)
     # psm 10 ("treat as a single character") is wrong surprisingly often on
     # this font -- confirmed on real hands: a clean, legible "5" and "6"
     # both came back empty at psm 10 whitelisted, while psm 8/13 read them
-    # correctly. Try a short cascade rather than trust one psm, matching
-    # the pattern already used for badges/stack amounts.
-    for psm in (10, 8, 13, 7, 6):
-        config = f'--psm {psm} -c tessedit_char_whitelist={_RANK_WHITELIST}'
-        text = pytesseract.image_to_string(mask, config=config).strip()
-        text = text.replace("0", "").strip()  # stray zero from a misread "10"
-        if not text:
-            continue
-        rank = text[0].upper()
-        if rank in _RANK_WHITELIST:
-            return rank
-    return None
+    # correctly.
+    return _read_rank(mask, (10, 8, 13, 7, 6))
 
 
 def read_rank(card_crop):
@@ -100,17 +108,7 @@ def _ocr_rank_bright(region_bgr, thresh=100):
     r = region_bgr[:, :, 2].astype(int)
     bright = (r > thresh) & (g > thresh) & (b > thresh)
     mask = (~bright).astype(np.uint8) * 255
-    mask = cv2.resize(mask, (mask.shape[1] * 4, mask.shape[0] * 4), interpolation=cv2.INTER_CUBIC)
-    for psm in (6, 10, 8, 13, 7):
-        config = f'--psm {psm} -c tessedit_char_whitelist={_RANK_WHITELIST}'
-        text = pytesseract.image_to_string(mask, config=config).strip()
-        text = text.replace("0", "").strip()  # stray zero from a misread "10"
-        if not text:
-            continue
-        rank = text[0].upper()
-        if rank in _RANK_WHITELIST:
-            return rank
-    return None
+    return _read_rank(mask, (6, 10, 8, 13, 7))
 
 
 def read_rank_from_top(card_crop, top_fractions=(0.4, 0.45, 0.5, 0.55, 0.6, 0.65)):

@@ -1,5 +1,5 @@
 """Turns a raw table screenshot/frame into a TableState."""
-from . import card_vision, ocr_utils, regions
+from . import card_vision, number_ocr, ocr_utils, regions
 from .table_state import Seat, TableState
 
 
@@ -15,15 +15,14 @@ def _crop(frame, box_ref):
     return frame[y1:y2, x1:x2]
 
 
-def _read_badge(frame, badge_ref):
-    """OCR a seat's badge. badge_ref is either one box or a list of
-    candidate boxes (see regions.SEATS's "badge" docstring -- some seats
-    render the badge in more than one position depending on whether the
-    player is currently holding cards); tries each in order and returns
-    the first recognized D/SB/BB, or None if none of them read.
+def _read_badge(frame, badge_boxes):
+    """OCR a seat's badge from its list of candidate boxes (see
+    regions.SEATS's "badge" docstring -- some seats render the badge in
+    more than one position depending on whether the player is currently
+    holding cards); tries each in order and returns the first recognized
+    D/SB/BB, or None if none of them read.
     """
-    candidates = badge_ref if isinstance(badge_ref, list) else [badge_ref]
-    for box in candidates:
+    for box in badge_boxes:
         position = ocr_utils.ocr_badge(_crop(frame, box))
         if position is not None:
             return position
@@ -124,7 +123,7 @@ class TableParser:
     def parse_seat(self, frame, seat_id):
         cfg = self.seat_defs[seat_id]
         name = ocr_utils.ocr_name(_crop(frame, cfg["name_row"])) or None
-        stack = ocr_utils.ocr_number(_crop(frame, cfg["stack_row"]))
+        stack = number_ocr.ocr_number(_crop(frame, cfg["stack_row"]))
         position = _read_badge(frame, cfg["badge"])
 
         bubble_box, label_box = regions.status_sub_zones(cfg)
@@ -165,7 +164,7 @@ class TableParser:
         return cards
 
     def parse_pot(self, frame):
-        return ocr_utils.ocr_number(_crop(frame, regions.POT_BOX))
+        return number_ocr.ocr_number(_crop(frame, regions.POT_BOX))
 
     def parse(self, frame, frame_index=0, timestamp_sec=0.0):
         seats = [self.parse_seat(frame, seat_id) for seat_id in self.seat_defs]
