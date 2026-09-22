@@ -55,13 +55,21 @@ def read_rank(card_crop):
     # is more robust here than one fixed brightness cutoff.
     _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
     mask = cv2.resize(mask, (mask.shape[1] * 4, mask.shape[0] * 4), interpolation=cv2.INTER_CUBIC)
-    config = f'--psm 10 -c tessedit_char_whitelist={_RANK_WHITELIST}'
-    text = pytesseract.image_to_string(mask, config=config).strip()
-    text = text.replace("0", "").strip()  # stray zero from a misread "10"
-    if not text:
-        return None
-    rank = text[0].upper()
-    return rank if rank in _RANK_WHITELIST else None
+    # psm 10 ("treat as a single character") is wrong surprisingly often on
+    # this font -- confirmed on real hands: a clean, legible "5" and "6"
+    # both came back empty at psm 10 whitelisted, while psm 8/13 read them
+    # correctly. Try a short cascade rather than trust one psm, matching
+    # the pattern already used for badges/stack amounts.
+    for psm in (10, 8, 13, 7, 6):
+        config = f'--psm {psm} -c tessedit_char_whitelist={_RANK_WHITELIST}'
+        text = pytesseract.image_to_string(mask, config=config).strip()
+        text = text.replace("0", "").strip()  # stray zero from a misread "10"
+        if not text:
+            continue
+        rank = text[0].upper()
+        if rank in _RANK_WHITELIST:
+            return rank
+    return None
 
 
 def parse_card(card_crop):
