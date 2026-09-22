@@ -1,10 +1,7 @@
 """Formats a parsed TableState dict (see TableState.to_dict()) as a compact
 human-readable summary for the server's stdout output.
 """
-
-# Action-order reference for sorting the printed seat list (D first, then
-# SB, BB, ... around to CO) -- matches parser.infer_positions's naming.
-_POSITION_ORDER = ["D", "SB", "BB", "UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO"]
+from .positions import POSITION_ORDER as _POSITION_ORDER
 
 # Suit letter -> symbol, matching card_vision.classify_suit's codes.
 _SUIT_SYMBOLS = {"c": "♣", "d": "♦", "h": "♥", "s": "♠"}

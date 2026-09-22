@@ -1,5 +1,5 @@
 """Turns a raw table screenshot/frame into a TableState."""
-from . import card_vision, number_ocr, ocr_utils, regions
+from . import card_vision, number_ocr, ocr_utils, positions, regions
 from .table_state import Seat, TableState
 
 
@@ -43,25 +43,9 @@ def _is_occupied(seat):
 
 
 
-# Standard poker position names for the seats between BB and the button, in
-# action order (closest to BB first), keyed by how many such seats there
-# are. Matches common charts (6-max = UTG,HJ,CO; 9-max = UTG,UTG+1,UTG+2,
-# LJ,HJ,CO); this game's seat layout maxes out at 9 total seats (8 opponent
-# slots + hero), so 6 is the largest key needed (9 - D - SB - BB).
-_MIDDLE_POSITION_NAMES = {
-    0: [],
-    1: ["UTG"],
-    2: ["UTG", "CO"],
-    3: ["UTG", "HJ", "CO"],
-    4: ["UTG", "UTG+1", "HJ", "CO"],
-    5: ["UTG", "UTG+1", "LJ", "HJ", "CO"],
-    6: ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO"],
-}
-
-
 def _middle_position_names(seats_between):
-    if seats_between in _MIDDLE_POSITION_NAMES:
-        return _MIDDLE_POSITION_NAMES[seats_between]
+    if seats_between in positions.MIDDLE_POSITION_NAMES:
+        return positions.MIDDLE_POSITION_NAMES[seats_between]
     # Beyond this game's 9-seat max (shouldn't happen) -- extrapolate with
     # plain UTG+k numbering rather than guessing at further named slots.
     return ["UTG"] + [f"UTG+{i}" for i in range(1, seats_between)]
