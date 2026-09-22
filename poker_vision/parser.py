@@ -125,7 +125,7 @@ class TableParser:
         hole_cards = []
         is_hero = seat_id == "hero"
         if is_hero:
-            hero_cards = [card_vision.parse_card(_crop(frame, box)) for box in regions.HERO_CARDS]
+            hero_cards = [card_vision.parse_hero_card(_crop(frame, box)) for box in regions.HERO_CARDS]
             hole_cards = [c for c in hero_cards if c]
             in_hand = len(hole_cards) > 0 or in_hand
 

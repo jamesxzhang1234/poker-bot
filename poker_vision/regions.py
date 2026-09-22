@@ -102,10 +102,18 @@ SEATS = {
     },
 }
 
-# Hero's own hole cards, shown face-up at bottom-right regardless of seat.
+# Hero's own hole cards. Unlike every other seat's cards (including an
+# opponent's own revealed hand at showdown, which render flat and
+# side-by-side like the board), hero's cards render fanned/overlapping and
+# rotated -- confirmed by the user and cross-checked against two real
+# hands. Boxes are wider than a single flat card slot to comfortably
+# contain the rotated glyph; see card_vision.parse_hero_card, which reads
+# the rank from a top-portion sub-crop instead of the tiny fixed
+# RANK_OFFSET used for flat cards (a rotated card's rank doesn't sit at a
+# reliable fixed corner offset).
 HERO_CARDS = [
-    (748, 2085, 862, 2245),
-    (866, 2085, 978, 2245),
+    (700, 1995, 815, 2300),
+    (810, 1995, 1000, 2300),
 ]
 
 # Five community card slots, left to right.
