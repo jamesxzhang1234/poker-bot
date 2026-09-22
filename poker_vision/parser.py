@@ -15,6 +15,21 @@ def _crop(frame, box_ref):
     return frame[y1:y2, x1:x2]
 
 
+def _read_badge(frame, badge_ref):
+    """OCR a seat's badge. badge_ref is either one box or a list of
+    candidate boxes (see regions.SEATS's "badge" docstring -- some seats
+    render the badge in more than one position depending on whether the
+    player is currently holding cards); tries each in order and returns
+    the first recognized D/SB/BB, or None if none of them read.
+    """
+    candidates = badge_ref if isinstance(badge_ref, list) else [badge_ref]
+    for box in candidates:
+        position = ocr_utils.ocr_badge(_crop(frame, box))
+        if position is not None:
+            return position
+    return None
+
+
 _RANK_ROLES = {"D": 0, "SB": 1, "BB": 2}
 
 
@@ -110,7 +125,7 @@ class TableParser:
         cfg = self.seat_defs[seat_id]
         name = ocr_utils.ocr_name(_crop(frame, cfg["name_row"])) or None
         stack = ocr_utils.ocr_number(_crop(frame, cfg["stack_row"]))
-        position = ocr_utils.ocr_badge(_crop(frame, cfg["badge"]))
+        position = _read_badge(frame, cfg["badge"])
 
         bubble_box, label_box = regions.status_sub_zones(cfg)
         status = ocr_utils.ocr_bubble_action(_crop(frame, bubble_box))

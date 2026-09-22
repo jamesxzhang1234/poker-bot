@@ -16,17 +16,35 @@ REF_H = 2622
 
 # One entry per seat around the table (8 opponent seats + hero).
 # "cards" = where face-down card backs render when a seat is still in the hand.
-# "badge" = generous zone for the D/SB/BB position badge near the avatar.
+# "badge" = zone(s) for the D/SB/BB position badge near the avatar. Either a
+#           single (x1,y1,x2,y2) box, or a list of candidate boxes for a seat
+#           confirmed to render the badge in more than one position (see
+#           below) -- parser.py tries each candidate in order.
 # "status" = generous zone spanning the action bubble (Check/Call/Raise/Bet)
 #            above the avatar and the persistent status text (Folded/Sitting
 #            Out/All-in) near the avatar's lower edge.
+#
+# Badge position for several seats isn't fixed -- confirmed against a full
+# survey of real screenshots (76 badge sightings across ~35 hands): the
+# badge relocates to avoid overlapping the seat's own card-back icons while
+# the player is actively holding cards (in_hand=True), and returns to a
+# different default spot once those icons disappear on fold (in_hand=False).
+# It only shows up as visible variance for seats where the two spots are far
+# apart on screen; top_left/mid_left/mid_right/lower_mid_right/
+# lower_mid_right/lower_mid_left showed a clean, large (150-200px) split
+# correlated with in_hand across every sample. bottom_left/bottom_right/
+# lower_mid_left's "near" spot did not (rock solid regardless of in_hand in
+# 10+ and 6+ samples respectively) -- likely because that seat's card-icon
+# geometry never conflicts with its default badge spot, so no reposition is
+# ever triggered. hero showed a much smaller (~40px) split, folded into one
+# widened box below rather than two candidates.
 SEATS = {
     "top_left": {
         "avatar": (177, 415, 347, 585),
         "cards": (120, 490, 240, 580),
         "name_row": (150, 602, 372, 660),
         "stack_row": (150, 660, 372, 718),
-        "badge": (405, 585, 464, 627),
+        "badge": [(340, 368, 405, 435), (405, 585, 464, 627)],
         "status": (80, 340, 400, 600),
     },
     "top_right": {
@@ -38,7 +56,7 @@ SEATS = {
         # no seat was ever occupied here in the calibration screenshots,
         # so this is an unverified estimate. Recheck if a player sits
         # here and their D/SB/BB badge isn't detected.
-        "badge": (742, 585, 801, 627),
+        "badge": [(801, 368, 866, 435), (742, 585, 801, 627)],
         "status": (800, 340, 1120, 600),
     },
     "mid_left": {
@@ -46,7 +64,7 @@ SEATS = {
         "cards": (0, 860, 100, 945),
         "name_row": (28, 955, 258, 1022),
         "stack_row": (28, 1022, 258, 1090),
-        "badge": (235, 741, 288, 794),
+        "badge": [(10, 735, 71, 800), (225, 735, 288, 800)],
         "status": (0, 700, 280, 960),
     },
     "mid_right": {
@@ -55,7 +73,7 @@ SEATS = {
         "name_row": (945, 955, 1180, 1022),
         "stack_row": (945, 1022, 1180, 1090),
         # Mirrored from mid_left -- unverified estimate, see top_right's note.
-        "badge": (918, 741, 971, 794),
+        "badge": [(1135, 735, 1196, 800), (918, 735, 981, 800)],
         "status": (900, 700, 1206, 960),
     },
     "lower_mid_left": {
@@ -64,7 +82,7 @@ SEATS = {
         "name_row": (0, 1500, 255, 1557),
         "stack_row": (0, 1557, 255, 1615),
         # Mirrored from lower_mid_right -- unverified estimate, see top_right's note.
-        "badge": (218, 1290, 285, 1346),
+        "badge": [(6, 1290, 66, 1346), (218, 1290, 291, 1346)],
         "status": (0, 1150, 300, 1500),
     },
     "lower_mid_right": {
@@ -72,7 +90,7 @@ SEATS = {
         "cards": (945, 1400, 1040, 1490),
         "name_row": (945, 1490, 1180, 1558),
         "stack_row": (945, 1552, 1180, 1618),
-        "badge": (915, 1290, 988, 1346),
+        "badge": [(915, 1290, 988, 1346), (1140, 1290, 1200, 1346)],
         "status": (900, 1140, 1206, 1500),
     },
     "bottom_left": {
@@ -97,7 +115,10 @@ SEATS = {
         "cards": None,  # hero cards are shown face-up separately, see HERO_CARDS
         "name_row": (480, 2100, 722, 2150),
         "stack_row": (480, 2155, 722, 2210),
-        "badge": (460, 1845, 528, 1907),
+        # Widened to cover both observed positions (~40px apart -- much
+        # smaller than the other affected seats, so one wider box instead
+        # of two candidates).
+        "badge": (415, 1845, 528, 1907),
         "status": (380, 1900, 820, 2100),
     },
 }
