@@ -9,6 +9,10 @@ _POSITION_ORDER = ["D", "SB", "BB", "UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO"]
 # Suit letter -> symbol, matching card_vision.classify_suit's codes.
 _SUIT_SYMBOLS = {"c": "♣", "d": "♦", "h": "♥", "s": "♠"}
 
+# Spelled out for readability as the leading label; other positions
+# (SB, BB, UTG, ...) are already short enough to print as-is.
+_POSITION_LABELS = {"D": "Dealer"}
+
 
 def _format_card(card):
     if card and card[-1] in _SUIT_SYMBOLS:
@@ -38,12 +42,22 @@ def format_summary(state):
 
     seats = sorted(state.get("seats", []), key=lambda s: _position_rank(s.get("position")))
     for seat in seats:
-        tag = "HERO" if seat.get("is_hero") else seat.get("seat_id", "?")
+        position = seat.get("position")
+        is_hero = seat.get("is_hero")
+        # Internal screen-slot names (e.g. "lower_mid_right") never appear
+        # in the output -- the resolved poker position is the identifier.
+        # Hero still needs the bracket since "HERO" itself doesn't convey
+        # position; every other seat's tag already IS its position, so
+        # repeating it in a bracket would just be redundant.
+        if is_hero:
+            tag = "HERO"
+        else:
+            tag = _POSITION_LABELS.get(position, position) or "?"
         parts = [tag]
         if seat.get("name"):
             parts.append(seat["name"])
-        if seat.get("position"):
-            parts.append(f"[{seat['position']}]")
+        if is_hero and position:
+            parts.append(f"[{position}]")
         if seat.get("stack") is not None:
             parts.append(f"${seat['stack']}")
         if seat.get("status"):

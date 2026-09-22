@@ -47,11 +47,16 @@ def test_format_summary_lists_seats_with_details():
     out = format_summary(state)
     assert "Pot: ?" in out
     assert "Board: (none)" in out
-    assert "Balboni" in out
-    assert "[SB]" in out
+    # Non-hero seat: its poker position ("SB") is the leading label itself,
+    # so the old redundant "[SB]" bracket is dropped -- the internal
+    # seat_id ("top_left") never appears in the output at all.
+    assert "SB Balboni" in out
+    assert "top_left" not in out
     assert "$17.2" in out
     assert "(Folded)" in out
-    assert "HERO" in out
+    # Hero: "HERO" is the leading label (not its position), so the
+    # position still needs the bracket to be visible at all.
+    assert "HERO [BB]" in out
     assert "A♥ K♦" in out
 
 
@@ -89,7 +94,7 @@ def _seat(seat_id, position):
         "position": position,
         "status": None,
         "in_hand": True,
-        "is_hero": False,
+        "is_hero": seat_id == "hero",
         "hole_cards": [],
     }
 
@@ -111,6 +116,43 @@ def test_format_summary_orders_seats_by_poker_position_not_input_order():
     }
     out = format_summary(state)
     lines = [line.strip() for line in out.splitlines() if line.strip()]
-    seat_order = [line.split()[0] for line in lines if line.split()[0] in
-                  ("top_left", "mid_right", "bottom_left", "hero", "lower_mid_right", "top_right")]
-    assert seat_order == ["top_left", "lower_mid_right", "mid_right", "top_right", "bottom_left", "hero"]
+    tag_order = [line.split()[0] for line in lines
+                 if line.split()[0] in ("Dealer", "SB", "BB", "UTG", "CO", "HERO")]
+    assert tag_order == ["Dealer", "SB", "BB", "UTG", "CO", "HERO"]
+
+
+def test_format_summary_uses_seat_position_as_the_leading_label_not_seat_id():
+    # The whole point: internal screen-slot names like "lower_mid_right"
+    # must never leak into the printed output -- the resolved poker
+    # position is the identifier instead.
+    state = {
+        "frame_index": 0,
+        "timestamp_sec": 0.0,
+        "pot": None,
+        "board_cards": [],
+        "seats": [{
+            "seat_id": "lower_mid_right", "name": "Fred", "stack": 10.0,
+            "position": "D", "status": None, "in_hand": True,
+            "is_hero": False, "hole_cards": [],
+        }],
+    }
+    out = format_summary(state)
+    assert "lower_mid_right" not in out
+    assert "Dealer" in out
+
+
+def test_format_summary_falls_back_to_placeholder_when_position_unknown():
+    state = {
+        "frame_index": 0,
+        "timestamp_sec": 0.0,
+        "pot": None,
+        "board_cards": [],
+        "seats": [{
+            "seat_id": "bottom_right", "name": "Fred", "stack": 10.0,
+            "position": None, "status": None, "in_hand": True,
+            "is_hero": False, "hole_cards": [],
+        }],
+    }
+    out = format_summary(state)
+    assert "bottom_right" not in out
+    assert "?" in out
