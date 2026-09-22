@@ -15,8 +15,13 @@ _RANK_WHITELIST = "23456789TJQKA"
 def classify_suit(bgr_mean):
     b, g, r = bgr_mean
     brightness = b + g + r
-    if brightness < 60:
-        return "s"  # spades render on a near-black background
+    # Spades render on a dark navy background, not truly black -- measured
+    # ~46-96 brightness on real cards (confirmed: a threshold of 60 let
+    # several through as false diamonds, since navy's blue channel still
+    # edges out red/green once you're past pure black). Real diamond/club/
+    # heart backgrounds measured well clear of this, starting at ~125.
+    if brightness < 110:
+        return "s"
     if g >= b and g >= r:
         return "c"  # clubs: green
     if b >= g and b >= r:
