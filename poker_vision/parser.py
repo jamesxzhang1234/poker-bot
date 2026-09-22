@@ -1,5 +1,5 @@
 """Turns a raw table screenshot/frame into a TableState."""
-from . import card_vision, number_ocr, ocr_utils, positions, regions
+from . import card_vision, number_ocr, ocr_utils, positions, regions, seat_layout
 from .table_state import Seat, TableState
 
 
@@ -57,7 +57,7 @@ def infer_positions(seats):
     frame, when that seat's own badge OCR came back empty.
 
     Single-frame only (no history across screenshots): rotates through the
-    occupied seats in regions.SEAT_ORDER's action-order direction, anchored
+    occupied seats in seat_layout.SEAT_ORDER's action-order direction, anchored
     on whichever seat had ANY position successfully read by OCR. Never
     overwrites a position OCR already found, and never assigns one to a
     seat with no player in it. Heads-up (exactly 2 occupied seats, where
@@ -65,7 +65,7 @@ def infer_positions(seats):
     revisit if it comes up.
     """
     by_id = {s.seat_id: s for s in seats}
-    occupied_order = [sid for sid in regions.SEAT_ORDER if sid in by_id and _is_occupied(by_id[sid])]
+    occupied_order = [sid for sid in seat_layout.SEAT_ORDER if sid in by_id and _is_occupied(by_id[sid])]
     n = len(occupied_order)
     if n < 3:
         return seats
