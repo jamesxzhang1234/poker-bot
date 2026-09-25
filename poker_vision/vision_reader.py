@@ -17,7 +17,7 @@ from typing import List
 import cv2
 import numpy as np
 
-from . import board_reader, seat_anchors
+from . import board_reader, parser, seat_anchors
 from .table_state import Seat, TableState
 
 
@@ -266,18 +266,27 @@ def build_table_state(payload, anchors, board_slots=None, rank_offset=None):
     plates = find_seat_plates(frame.observations, frame.width, frame.height)
     assigned = assign_to_seats(plates, anchors, frame.width, frame.height)
     statuses = find_statuses(frame.observations, frame.width, frame.height)
+    badges = find_badges(frame.observations, frame.width, frame.height)
 
     seats = []
     for seat_id, plate in sorted(assigned.items()):
-        status = statuses.get((plate.name, plate.x, plate.y))
+        key = (plate.name, plate.x, plate.y)
+        status = statuses.get(key)
         seats.append(Seat(
             seat_id=seat_id,
             name=plate.name,
             stack=plate.stack,
+            position=badges.get(key),
             status=status,
             in_hand=is_in_hand(status),
             is_hero=(seat_id == seat_anchors.HERO_SEAT_ID),
         ))
+
+    # One badge is enough to place the whole table: infer_positions rotates
+    # the occupied seats in action order from whichever seat has a read badge.
+    # Reused from the fixed-region parser rather than reimplemented -- both
+    # layouts use the same seat-ids, so the same rotation applies.
+    parser.infer_positions(seats)
     board = []
     if board_slots and rank_offset is not None and frame.board_strip is not None \
             and frame.board_strip_rect is not None:
@@ -347,6 +356,52 @@ def find_statuses(observations, width, height):
             continue
         plate = min(below, key=lambda p: p.y - o.y)
         out[(plate.name, plate.x, plate.y)] = _CANONICAL_STATUS[word]
+    return out
+
+
+# The dealer/blind badges. Note Vision never returns a bare "D" -- a single
+# character is too isolated for its text detector -- so in practice only SB
+# and BB arrive. That is enough: parser.infer_positions rotates the rest of
+# the table from any one badge.
+_BADGE_WORDS = {"d": "D", "sb": "SB", "bb": "BB"}
+
+# A badge sits above its plate and off to one side, at 8.7-9.8% of the frame
+# diagonal on both devices (measured: 249-282px on the iPhone's 2886px
+# diagonal, 253-256px on the iPad's 2874px). Using distance rather than
+# separate dx/dy bounds is what makes one number cover both -- the horizontal
+# offset is ~100px on each device, which is a different *fraction* of width on
+# each, while the diagonal fraction matches.
+_BADGE_DIST_MAX = 0.120
+_BADGE_DIST_MIN = 0.040
+
+
+def find_badges(observations, width, height):
+    """Map each D/SB/BB badge onto the seat plate it belongs to.
+
+    Returns {(name, x, y): badge} keyed by the plate's identity.
+    """
+    plates = find_seat_plates(observations, width, height)
+    diagonal = (width ** 2 + height ** 2) ** 0.5
+    near, far = _BADGE_DIST_MIN * diagonal, _BADGE_DIST_MAX * diagonal
+
+    out = {}
+    for o in observations:
+        if o.confidence < _MIN_CONFIDENCE:
+            continue
+        badge = _BADGE_WORDS.get(o.text.strip().lower())
+        if badge is None:
+            continue
+        # Every badge renders above its own seat, so a plate above the badge
+        # belongs to someone else.
+        candidates = [
+            (((p.x - o.x) ** 2 + (p.y - o.y) ** 2) ** 0.5, p)
+            for p in plates if p.y > o.y
+        ]
+        candidates = [(d, p) for d, p in candidates if near <= d <= far]
+        if not candidates:
+            continue
+        _, plate = min(candidates, key=lambda dp: dp[0])
+        out[(plate.name, plate.x, plate.y)] = badge
     return out
 
 

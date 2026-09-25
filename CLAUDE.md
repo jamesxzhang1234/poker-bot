@@ -114,7 +114,7 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
 | `text_summary.py` | stdout formatter; seats sorted by `POSITION_ORDER`, suits as symbols. | server |
 | `server.py` | Flask upload endpoint + background worker thread, joined only by a `queue.Queue` of file paths. | — |
 | `main.py` | Offline CLI over image/video files. | — |
-| `vision_reader.py` | **The Vision path.** Turns the capture helper's JSON (recognised text + pixel positions) into a `TableState`: `parse_payload`, `parse_amount`, `find_seat_plates`, `find_pot`, `assign_to_seats`, `build_table_state`. Locates text by recognition, then assigns it to a seat by proximity — no per-field boxes. | — (server/main not yet wired) |
+| `vision_reader.py` | **The Vision path.** Turns the capture helper's JSON into a `TableState`: seats, stacks, pot, status, badges, and the board. Locates text by recognition, then assigns it to a seat by proximity — no per-field boxes. Reuses `parser.infer_positions` to fill unread positions. | vision_live |
 | `seat_anchors.py` | One (x, y) anchor per seat, per device: `IPAD_PORTRAIT`, `IPHONE_PORTRAIT`. Derived by clustering real frames, not hand-measured. | vision_reader, vision_live |
 | `rank_templates.py` | Card ranks by template matching against stored exemplars (`data/rank_templates.npz`). Several exemplars per rank, because one set does **not** serve both devices. | board_reader |
 | `board_reader.py` | Reads the community board: rank from `rank_templates`, suit from `card_vision.classify_suit`. Has its own brightness-based card-presence test. | vision_reader |
@@ -196,6 +196,26 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   working iPhone path, and a calibration change needs the full before/after
   sweep. A max-channel test would likely separate navy from bright blue more
   robustly than the sum does.
+
+- **Vision never returns a bare "D".** A single character is too isolated for
+  its text detector, so only "SB" and "BB" arrive. That is enough: one badge
+  anchors `parser.infer_positions`, which rotates the rest of the table into
+  place. Wiring that up took iPad position coverage from 0% to 79%, and the
+  inferred labels were checked against a screenshot (D=drake81, SB=trill04,
+  BB=jxz). Badges are matched to a seat by **distance** rather than separate
+  dx/dy bounds -- the horizontal offset is ~100px on both devices, which is a
+  different fraction of each one's width, while the diagonal fraction agrees
+  (8.7-9.8%).
+
+- **Live capture supervises itself; it does not start once and hope.** The
+  capture interface vanishes the instant the device locks -- iOS drops it back
+  to a USB configuration that publishes none -- so a one-shot `startRunning()`
+  dies silently the first time the screen sleeps. The helper polls every 2s:
+  acquire when the device appears, notice when it goes, reacquire when it
+  returns, carrying the frame counter across so indices stay monotonic. It
+  also distinguishes "nothing plugged in" from "plugged in but not offering
+  capture" by consulting `ioreg`, because AVFoundation reports both as an
+  empty discovery list and the two need different fixes.
 
 - **The helper sends text plus one small pixel strip, not the whole frame.**
   Everything except card ranks is read from recognised text, but ranks are

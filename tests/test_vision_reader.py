@@ -472,3 +472,70 @@ def test_board_is_empty_when_the_helper_sent_no_strip():
         rank_offset=seat_anchors.IPAD_RANK_OFFSET)
 
     assert state.board_cards == []
+
+
+def test_assigns_a_position_badge_to_its_seat():
+    # Badges sit above and to one side of the plate, at 8.7-9.8% of the frame
+    # diagonal on both devices. Real coordinates from frames/ipad.
+    obs = [_obs("SB", 924, 1689), _obs("jxz", 814, 1920), _obs("27.8", 820, 1980)]
+
+    badges = vision_reader.find_badges(obs, width=1640, height=2360)
+
+    assert badges == {("jxz", 814, 1920): "SB"}
+
+
+def test_a_badge_below_a_plate_belongs_to_a_different_seat():
+    # Every badge renders above its own seat, so one sitting below a plate is
+    # another seat's and must not be attached to this one.
+    obs = [_obs("BB", 814, 2100), _obs("jxz", 814, 1920), _obs("27.8", 820, 1980)]
+
+    assert vision_reader.find_badges(obs, width=1640, height=2360) == {}
+
+
+def test_a_distant_badge_is_not_attached():
+    obs = [_obs("SB", 200, 400), _obs("jxz", 814, 1920), _obs("27.8", 820, 1980)]
+
+    assert vision_reader.find_badges(obs, width=1640, height=2360) == {}
+
+
+def test_table_state_carries_the_badge_position():
+    import json
+    from poker_vision import seat_anchors
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "observations": [
+            {"text": "SB", "x": 924, "y": 1689, "w": 37, "h": 24, "confidence": 1.0},
+            {"text": "jxz", "x": 814, "y": 1920, "w": 51, "h": 34, "confidence": 1.0},
+            {"text": "27.8", "x": 820, "y": 1980, "w": 82, "h": 37, "confidence": 1.0},
+        ],
+    })
+
+    state = vision_reader.build_table_state(payload, seat_anchors.IPAD_PORTRAIT)
+
+    hero = [s for s in state.seats if s.seat_id == "hero"][0]
+    assert hero.position == "SB"
+
+
+def test_unread_positions_are_inferred_from_one_detected_badge():
+    # Vision never returns a bare "D" -- a single character is too isolated to
+    # be detected as text -- but it does read "SB"/"BB". One badge is enough
+    # for parser.infer_positions to rotate the rest of the table into place.
+    import json
+    from poker_vision import seat_anchors
+
+    seats = [("drake81", 511, 565, "7.75"), ("Jaimie73", 404, 895, "9.45"),
+             ("edngaming", 393, 1392, "20.8"), ("trill04", 1195, 1721, "9.4"),
+             ("jxz", 814, 1920, "27.8")]
+    obs = [{"text": "SB", "x": 924, "y": 1689, "w": 37, "h": 24, "confidence": 1.0}]
+    for name, x, y, stack in seats:
+        obs.append({"text": name, "x": x, "y": y, "w": 120, "h": 30, "confidence": 1.0})
+        obs.append({"text": stack, "x": x, "y": y + 57, "w": 70, "h": 30, "confidence": 1.0})
+    payload = json.dumps({"frame_index": 0, "timestamp_sec": 0.0,
+                          "width": 1640, "height": 2360, "observations": obs})
+
+    state = vision_reader.build_table_state(payload, seat_anchors.IPAD_PORTRAIT)
+
+    positions = {s.seat_id: s.position for s in state.seats}
+    assert positions["hero"] == "SB"
+    # every occupied seat ends up with a position, not just the badged one
+    assert all(p is not None for p in positions.values()), positions

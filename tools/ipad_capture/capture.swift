@@ -197,48 +197,114 @@ final class LiveCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
     }
 }
 
+/// Whether an iOS device is on the USB bus at all.
+///
+/// AVFoundation cannot tell "nothing plugged in" apart from "plugged in but
+/// not offering capture" -- both are an empty discovery list -- so the two are
+/// separated here by asking the USB tree directly. The distinction matters
+/// because the fixes are different: plug it in, versus unlock it and quit
+/// QuickTime.
+func iosDeviceOnBus() -> Bool {
+    let ioreg = Process()
+    ioreg.executableURL = URL(fileURLWithPath: "/usr/sbin/ioreg")
+    ioreg.arguments = ["-p", "IOUSB", "-w0"]
+    let pipe = Pipe()
+    ioreg.standardOutput = pipe
+    ioreg.standardError = FileHandle.nullDevice
+    guard (try? ioreg.run()) != nil else { return false }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    ioreg.waitUntilExit()
+    let text = String(data: data, encoding: .utf8) ?? ""
+    return text.contains("iPad@") || text.contains("iPhone@")
+}
+
+func note(_ message: String) {
+    FileHandle.standardError.write((message + "\n").data(using: .utf8)!)
+}
+
+/// Keeps a capture session running across the device coming and going.
+///
+/// The capture interface disappears the moment the device locks -- iOS drops
+/// it back to a USB configuration that doesn't publish one -- so a one-shot
+/// startRunning() dies silently the first time the screen sleeps mid-session.
+/// This polls instead: acquire when the device is there, notice when it goes,
+/// and pick it up again when it returns.
+final class Supervisor {
+    let fast: Bool
+    let minInterval: Double
+    var session: AVCaptureSession?
+    var grabber: LiveCapture?
+    var lastComplaint = ""
+    var frameIndex = 0
+
+    init(fast: Bool, minInterval: Double) { self.fast = fast; self.minInterval = minInterval }
+
+    private func complain(_ message: String) {
+        // Only when the reason changes, so a long wait doesn't spam the log.
+        if message != lastComplaint { note(message); lastComplaint = message }
+    }
+
+    private func start(_ device: AVCaptureDevice) {
+        let session = AVCaptureSession()
+        session.sessionPreset = .high
+        guard let input = try? AVCaptureDeviceInput(device: device),
+              session.canAddInput(input) else {
+            complain("waiting: device is present but held by another process "
+                     + "(quit QuickTime Player)")
+            return
+        }
+        session.addInput(input)
+        let output = AVCaptureVideoDataOutput()
+        output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String:
+                                    kCVPixelFormatType_32BGRA]
+        output.alwaysDiscardsLateVideoFrames = true      // latest frame wins
+        // Carry the frame counter across reconnects so indices stay monotonic.
+        let grabber = LiveCapture(fast: fast, minInterval: minInterval)
+        grabber.index = frameIndex
+        output.setSampleBufferDelegate(grabber, queue: DispatchQueue(label: "capture"))
+        guard session.canAddOutput(output) else {
+            complain("waiting: cannot add capture output")
+            return
+        }
+        session.addOutput(output)
+        session.startRunning()
+        self.session = session
+        self.grabber = grabber
+        lastComplaint = ""
+        note("capturing: \(device.localizedName)")
+    }
+
+    private func stop(_ reason: String) {
+        frameIndex = grabber?.index ?? frameIndex
+        session?.stopRunning()
+        session = nil
+        grabber = nil
+        lastComplaint = ""
+        note("lost the device (\(reason)) -- waiting for it to come back")
+    }
+
+    func tick() {
+        let device = findDevice()
+        if session != nil {
+            if device == nil { stop("locked, unplugged, or taken by another app") }
+            return
+        }
+        guard let device = device else {
+            complain(iosDeviceOnBus()
+                ? "waiting: iOS device is attached but offers no capture interface "
+                  + "-- unlock it, and quit QuickTime Player if it is running"
+                : "waiting: no iOS device attached over USB")
+            return
+        }
+        start(device)
+    }
+}
+
 func runLive(fast: Bool, minInterval: Double) -> Never {
     enableScreenCaptureDevices()
-    Thread.sleep(forTimeInterval: 1.0)
-    guard let dev = findDevice() else {
-        // Distinguish the two silent failures: a device that is absent, and a
-        // device that is present but held by QuickTime or unlocked-gated. Both
-        // look identical to AVFoundation -- an empty discovery list.
-        let ioreg = Process()
-        ioreg.executableURL = URL(fileURLWithPath: "/usr/sbin/ioreg")
-        ioreg.arguments = ["-p", "IOUSB", "-w0"]
-        let pipe = Pipe(); ioreg.standardOutput = pipe
-        try? ioreg.run(); ioreg.waitUntilExit()
-        let text = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
-                          encoding: .utf8) ?? ""
-        let attached = text.contains("iPad@") || text.contains("iPhone@")
-        FileHandle.standardError.write((attached
-            ? "error: iOS device is attached but exposes no capture interface.\n"
-              + "       Unlock the device, and quit QuickTime Player if it is running.\n"
-            : "error: no iOS device attached over USB.\n").data(using: .utf8)!)
-        exit(1)
-    }
-    FileHandle.standardError.write("capturing: \(dev.localizedName)\n".data(using: .utf8)!)
-
-    let session = AVCaptureSession()
-    session.sessionPreset = .high
-    guard let input = try? AVCaptureDeviceInput(device: dev), session.canAddInput(input) else {
-        FileHandle.standardError.write("error: cannot open device (held elsewhere?)\n"
-                                        .data(using: .utf8)!)
-        exit(1)
-    }
-    session.addInput(input)
-    let out = AVCaptureVideoDataOutput()
-    out.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-    out.alwaysDiscardsLateVideoFrames = true      // latest frame wins
-    let delegate = LiveCapture(fast: fast, minInterval: minInterval)
-    out.setSampleBufferDelegate(delegate, queue: DispatchQueue(label: "capture"))
-    guard session.canAddOutput(out) else {
-        FileHandle.standardError.write("error: cannot add output\n".data(using: .utf8)!)
-        exit(1)
-    }
-    session.addOutput(out)
-    session.startRunning()
+    let supervisor = Supervisor(fast: fast, minInterval: minInterval)
+    supervisor.tick()
+    Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in supervisor.tick() }
     RunLoop.main.run()
     exit(0)
 }
