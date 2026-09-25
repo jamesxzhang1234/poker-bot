@@ -47,6 +47,45 @@ func cropStrip(_ cg: CGImage, _ r: (x: Double, y: Double, w: Double, h: Double))
     return png.base64EncodedString()
 }
 
+// A quarter-scale greyscale of the whole frame, ~15KB as a JPEG. It carries
+// what the text mask cannot: the face-down card backs beside each seat, which
+// are how a folded player is told from a live one. Quality and scale are low
+// on purpose -- the consumer only measures what fraction of a small box is
+// mid-bright, which survives heavy compression.
+let THUMB_SCALE = 0.25
+
+func tableThumb(_ cg: CGImage) -> String? {
+    let w = Int(Double(cg.width) * THUMB_SCALE), h = Int(Double(cg.height) * THUMB_SCALE)
+    // Draw to RGBA and compute luma with the same weights OpenCV uses, rather
+    // than rendering into a grey colourspace. CGColorSpace.linearGray applies
+    // a linear transfer function and crushes the mid-tones this is measuring:
+    // the same frame came out with a mean of 5.6 against OpenCV's 28.1, so
+    // every brightness threshold on the consumer side missed.
+    var rgba = [UInt8](repeating: 0, count: w * h * 4)
+    guard let ctx = CGContext(data: &rgba, width: w, height: h, bitsPerComponent: 8,
+                              bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    else { return nil }
+    ctx.interpolationQuality = .medium
+    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+    var grey = [UInt8](repeating: 0, count: w * h)
+    for i in 0..<(w * h) {
+        let r = Double(rgba[i * 4]), g = Double(rgba[i * 4 + 1]), b = Double(rgba[i * 4 + 2])
+        grey[i] = UInt8(min(255.0, 0.299 * r + 0.587 * g + 0.114 * b))
+    }
+    guard let space = CGColorSpace(name: CGColorSpace.linearGray),
+          let out = CGContext(data: &grey, width: w, height: h, bitsPerComponent: 8,
+                              bytesPerRow: w, space: space,
+                              bitmapInfo: CGImageAlphaInfo.none.rawValue),
+          let small = out.makeImage() else { return nil }
+    let rep = NSBitmapImageRep(cgImage: small)
+    guard let jpeg = rep.representation(using: .jpeg,
+                                        properties: [.compressionFactor: 0.6])
+    else { return nil }
+    return jpeg.base64EncodedString()
+}
+
 func boardStrip(_ cg: CGImage) -> String? { cropStrip(cg, BOARD_RECT) }
 func heroStrip(_ cg: CGImage) -> String? { cropStrip(cg, HERO_RECT) }
 
@@ -96,7 +135,7 @@ struct Emitter {
     static func emit(index: Int, timestamp: Double, width: Int, height: Int,
                      observations: [(String, CGRect, Float)], source: String? = nil,
                      strip: String? = nil, mask: String? = nil,
-                     hero: String? = nil) {
+                     hero: String? = nil, thumb: String? = nil) {
         var rows: [[String: Any]] = []
         let W = Double(width), H = Double(height)
         for (text, bb, conf) in observations {
@@ -125,6 +164,10 @@ struct Emitter {
             payload["board_strip"] = strip
             payload["board_strip_rect"] = [BOARD_RECT.x, BOARD_RECT.y,
                                            BOARD_RECT.w, BOARD_RECT.h]
+        }
+        if let thumb = thumb {
+            payload["table_thumb"] = thumb
+            payload["table_thumb_scale"] = THUMB_SCALE
         }
         if let hero = hero {
             payload["hero_strip"] = hero
@@ -181,7 +224,8 @@ func runDirectory(_ dir: String, fast: Bool) {
             .data(using: .utf8)!)
         Emitter.emit(index: i, timestamp: Date().timeIntervalSince1970,
                      width: cg.width, height: cg.height, observations: obs, source: name,
-                     strip: boardStrip(cg), mask: textMask(cg), hero: heroStrip(cg))
+                     strip: boardStrip(cg), mask: textMask(cg), hero: heroStrip(cg),
+                     thumb: tableThumb(cg))
     }
 }
 
@@ -253,7 +297,8 @@ final class LiveCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
         let obs = recogniseText(cg, fast: fast)
         Emitter.emit(index: index, timestamp: Date().timeIntervalSince1970,
                      width: cg.width, height: cg.height, observations: obs,
-                     strip: boardStrip(cg), mask: textMask(cg), hero: heroStrip(cg))
+                     strip: boardStrip(cg), mask: textMask(cg), hero: heroStrip(cg),
+                     thumb: tableThumb(cg))
         index += 1
     }
 }

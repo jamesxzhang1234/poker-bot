@@ -89,21 +89,30 @@ def render(state, previous=None, frames=None, latency_ms=None, status=None):
     pot = _amount(state.pot)
     flag = "  ! bets > pot" if _pot_mismatch(state) else ""
 
+    live = sum(1 for s in state.seats if s.in_hand)
     header = f"  Pot {pot:<12}Board  {board}{flag}"
     if status:
         header = f"  [HELD] {status}\n" + header
-    lines = [header, "  " + "-" * _WIDTH]
+    lines = [header]
+    if state.your_turn:
+        owed = "" if state.to_call is None else f"   to call {state.to_call:g}"
+        lines.append(f"  >>> YOUR TURN{owed}")
+    lines += [f"  {live} in hand", "  " + "-" * _WIDTH]
 
     for seat in sorted(state.seats, key=lambda s: _position_rank(s.position)):
         moved = _changed(seat, previous_by_seat)
         mark = "*" if moved else " "
         position = (seat.position or "--")
         hero = "<" if seat.is_hero else " "
+        # A seat that has folded is dimmed to a marker, so the players still
+        # contesting the pot read at a glance -- that count drives almost
+        # every decision.
+        out = " " if seat.in_hand else "."
         cards = ""
         if seat.hole_cards:
             cards = "[" + " ".join(_format_card(c) for c in seat.hole_cards) + "] "
         lines.append(
-            f"  {position:>5}{hero} {str(seat.name or '?'):<16}"
+            f" {out}{position:>5}{hero} {str(seat.name or '?'):<16}"
             f"{_amount(seat.stack):>8} {mark}  {cards}{_action(seat)}".rstrip())
 
     lines.append("  " + "-" * _WIDTH)
@@ -112,7 +121,7 @@ def render(state, previous=None, frames=None, latency_ms=None, status=None):
         footer += f"   {frames} captured"
     if latency_ms is not None:
         footer += f"   {latency_ms:.0f}ms"
-    footer += "   * = changed    < = you"
+    footer += "   * changed   < you   . folded"
     lines.append(footer)
     return "\n".join(lines)
 

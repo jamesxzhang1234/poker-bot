@@ -55,6 +55,11 @@ class VisionFrame:
     # than the board strip while covering the whole frame -- and it is what
     # lets a stack Vision failed to detect be re-read from pixels.
     text_mask: "np.ndarray" = None
+    # Quarter-scale greyscale of the whole frame, ~15KB. Carries the pixels
+    # the text mask cannot: the face-down card backs beside each seat, which
+    # are how you tell a folded player from a live one.
+    table_thumb: "np.ndarray" = None
+    table_thumb_scale: float = None
     # The hero's own cards as pixels. Separate from the board strip because
     # they sit at the bottom of the screen, nowhere near the board band, and
     # separate from the text mask because suit is a colour the mask discards.
@@ -86,7 +91,15 @@ def parse_payload(payload):
         hero = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
     hero_rect = data.get("hero_strip_rect")
 
+    thumb = None
+    encoded_thumb = data.get("table_thumb")
+    if encoded_thumb:
+        buffer = np.frombuffer(base64.b64decode(encoded_thumb), dtype=np.uint8)
+        thumb = cv2.imdecode(buffer, cv2.IMREAD_GRAYSCALE)
+
     return VisionFrame(
+        table_thumb=thumb,
+        table_thumb_scale=data.get("table_thumb_scale"),
         hero_strip=hero,
         hero_strip_rect=tuple(hero_rect) if hero_rect else None,
         text_mask=text_mask,
@@ -454,11 +467,21 @@ def build_table_state(payload, anchors, board_slots=None, rank_offset=None,
 
     bets = find_bets(frame.observations, assigned, frame.width, frame.height,
                      board_slots=board_slots, hero_cards=hero_cards)
+    action = find_action(frame.observations, frame.width, frame.height)
 
     seats = []
     for seat_id, plate in sorted(assigned.items()):
         key = (plate.name, plate.x, plate.y)
         status = statuses.get(key)
+
+        # Whether a seat still holds cards is a visual fact -- they are beside
+        # the avatar or they are not -- so it beats the status text, which is
+        # read on only 28% of seats. Fall back to the text when no thumbnail
+        # came with the frame.
+        holding = seat_has_cards(frame.table_thumb, anchors[seat_id],
+                                 frame.table_thumb_scale)
+        if holding is None:
+            holding = is_in_hand(status)
         stack = plate.stack
         if stack is None:
             stack = recover_stack(frame.text_mask, plate, frame.width, frame.height)
@@ -469,7 +492,7 @@ def build_table_state(payload, anchors, board_slots=None, rank_offset=None,
             position=badges.get(key),
             bet=bets.get(seat_id),
             status=status,
-            in_hand=is_in_hand(status),
+            in_hand=holding,
             is_hero=(seat_id == seat_anchors.HERO_SEAT_ID),
         ))
 
@@ -491,6 +514,8 @@ def build_table_state(payload, anchors, board_slots=None, rank_offset=None,
         seats=seats,
         board_cards=board,
         pot=find_pot(frame.observations, frame.width, frame.height),
+        your_turn=action.your_turn,
+        to_call=action.to_call,
     )
 
 
@@ -754,3 +779,77 @@ def hero_signature(frame):
     small = cv2.resize(cv2.cvtColor(frame.hero_strip, cv2.COLOR_BGR2GRAY),
                        (16, 16), interpolation=cv2.INTER_AREA)
     return small.flatten().tolist()
+
+
+# Where a seat's two face-down cards sit relative to its anchor, in full-frame
+# pixels. They render up and to the left of the plate on every seat.
+_CARD_BACK_BOX = (-140, -100, -20, -20)
+
+# Fraction of that box that is mid-bright. Measured on real frames: a seat
+# holding cards reads 7.3-9.5%, a folded one 0.0-2.7%, with nothing between.
+_CARD_BACK_LIGHT = 0.05
+
+
+def seat_has_cards(thumb, anchor, scale):
+    """Whether this seat still holds cards, or None if there is no thumbnail.
+
+    This is how a folded player is told from a live one. The alternative is
+    the small red "Folded" label, which is read on only 28% of seats -- a
+    player who has folded simply has no cards beside them, and that is a
+    visual fact rather than an OCR result.
+    """
+    if thumb is None or not scale:
+        return None
+    ax, ay = anchor
+    dx1, dy1, dx2, dy2 = _CARD_BACK_BOX
+    x1, y1 = int((ax + dx1) * scale), int((ay + dy1) * scale)
+    x2, y2 = int((ax + dx2) * scale), int((ay + dy2) * scale)
+    x1, y1 = max(x1, 0), max(y1, 0)
+    x2, y2 = min(x2, thumb.shape[1]), min(y2, thumb.shape[0])
+    if x2 <= x1 or y2 <= y1:
+        return None
+    patch = thumb[y1:y2, x1:x2]
+    light = float(((patch > 120) & (patch < 235)).mean())
+    return light > _CARD_BACK_LIGHT
+
+
+# The row of buttons along the bottom. Two different sets live there and they
+# mean opposite things: the pre-action checkboxes are shown while you WAIT,
+# the action buttons when it is your turn.
+_PREACTION = {"call any", "check / fold", "straddle", "fold to any", "check"}
+_PREACTION_STRICT = {"call any", "check / fold", "straddle", "fold to any"}
+_ACTION = {"fold", "check", "bet", "raise", "all in", "call"}
+_CALL_AMOUNT = re.compile(r"(?i)^call\s+([\d.]+)$")
+
+
+@dataclass
+class ActionState:
+    """Whether it is the hero's turn, and what a call costs."""
+    your_turn: bool = False
+    to_call: float = None
+
+
+def find_action(observations, width, height):
+    """Read the bottom button row: is it your turn, and what do you owe?
+
+    A decision needs both and neither was captured before. The subtlety is
+    that Vision sometimes splits "Check / Fold" into separate Check and Fold
+    tokens, which look exactly like the real buttons -- so any pre-action word
+    on the row settles it as "not your turn", whatever else is there.
+    """
+    row = [o.text.strip() for o in observations
+           if o.y > height * 0.93 and o.confidence >= _MIN_CONFIDENCE]
+    lowered = [t.lower() for t in row]
+
+    if any(t in _PREACTION_STRICT for t in lowered):
+        return ActionState(your_turn=False)
+
+    to_call = None
+    for text in row:
+        match = _CALL_AMOUNT.match(text)
+        if match:
+            to_call = parse_amount(match.group(1))
+            break
+
+    acting = any(t in _ACTION for t in lowered) or to_call is not None
+    return ActionState(your_turn=acting, to_call=to_call)

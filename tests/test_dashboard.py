@@ -28,8 +28,10 @@ def test_seats_are_ordered_by_poker_position():
 
     lines = [l for l in render(_state(seats)).splitlines() if "dealer" in l
              or "bigblind" in l or "cutoff" in l]
+    order = [next(n for n in ("dealer", "bigblind", "cutoff") if n in l)
+             for l in lines]
 
-    assert [l.split()[1] for l in lines] == ["dealer", "bigblind", "cutoff"]
+    assert order == ["dealer", "bigblind", "cutoff"]
 
 
 def test_an_action_shows_the_amount_committed():
@@ -198,3 +200,43 @@ def test_a_seat_with_no_known_cards_shows_none():
     line = [l for l in render(_state(seats)).splitlines() if "jxz" in l][0]
 
     assert "♦" not in line and "[" not in line
+
+
+def test_your_turn_is_called_out_with_the_amount_to_call():
+    # The one thing you most need to see at a glance, and the trigger a
+    # decision engine would fire on.
+    seats = [Seat(seat_id="hero", name="jxz", stack=9.9, position="SB", is_hero=True)]
+    state = _state(seats, pot=1.7)
+    state.your_turn = True
+    state.to_call = 0.3
+
+    out = render(state)
+    assert "YOUR TURN" in out
+    assert "0.3" in out
+
+
+def test_nothing_is_called_out_when_it_is_not_your_turn():
+    seats = [Seat(seat_id="hero", name="jxz", stack=9.9, position="SB", is_hero=True)]
+
+    assert "YOUR TURN" not in render(_state(seats, pot=1.7))
+
+
+def test_folded_seats_are_visibly_out_of_the_hand():
+    seats = [Seat(seat_id="a", name="live", stack=1.0, position="D", in_hand=True),
+             Seat(seat_id="b", name="gone", stack=2.0, position="SB", in_hand=False)]
+
+    rendered = render(_state(seats)).splitlines()
+    live_line = next(l for l in rendered if "live" in l)
+    gone_line = next(l for l in rendered if "gone" in l)
+
+    # the folded seat carries a marker the live one does not
+    assert gone_line.lstrip().startswith(".")
+    assert not live_line.lstrip().startswith(".")
+
+
+def test_the_count_of_players_still_in_the_hand_is_shown():
+    seats = [Seat(seat_id="a", name="x", stack=1.0, position="D", in_hand=True),
+             Seat(seat_id="b", name="y", stack=1.0, position="SB", in_hand=True),
+             Seat(seat_id="c", name="z", stack=1.0, position="BB", in_hand=False)]
+
+    assert "2 in hand" in render(_state(seats))

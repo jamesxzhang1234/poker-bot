@@ -247,6 +247,32 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   effectively free. Don't swap it for a faster one without first changing
   what makes this cheap.
 
+- **Who is still in the hand comes from the cards beside a seat, not the
+  "Folded" text.** The label is read on only 28% of seats, which is useless to
+  anything downstream -- a decision needs the opponent count. A folded player
+  simply has no cards next to their avatar, which is a visual fact: measured
+  over labelled seats, a seat holding cards reads 7.3-9.5% mid-bright pixels
+  in the box up-and-left of its plate against 0.0-2.7% folded, with nothing
+  between. Every seat now gets an answer (14/14 correct on labelled seats,
+  3.8 players per frame, a plausible poker number).
+
+- **The helper's thumbnail must carry gamma-encoded luma.** It is drawn to
+  RGBA and converted with OpenCV's weights, NOT rendered into
+  `CGColorSpace.linearGray`. That colourspace applies a linear transfer
+  function and crushes exactly the mid-tones this measures: the same frame
+  came out with a mean of 5.6 against OpenCV's 28.1, every brightness
+  threshold missed, and in-hand detection scored 4/14 instead of 14/14.
+
+- **"Your turn" and the amount to call come from the bottom button row.**
+  Neither was captured before and a decision engine needs both: one is the
+  trigger, the other is half the pot odds. The catch is that two different
+  button sets live on that row and mean opposite things -- `Call any`,
+  `Check / Fold` and `Straddle` are the pre-select boxes shown while WAITING,
+  while `Fold`, `Check`, `Bet` and `Call 0.25` mean it is your turn. Vision
+  sometimes splits "Check / Fold" into separate Check and Fold tokens, which
+  look exactly like the real buttons, so any pre-action word on the row
+  settles it as not-your-turn whatever else is there.
+
 - **Backtest with invariants, not just labelled frames.** Card reading was
   validated against ~10 hand-labelled frames and looked finished at 20/20.
   Running all 101 frames and checking rules that hold *without* labels found

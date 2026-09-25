@@ -26,12 +26,19 @@ class TableState:
     seats: List[Seat]
     board_cards: List[str]
     pot: Optional[float] = None
+    # Whether the hero is being asked to act, and what a call costs. Both come
+    # from the button row at the bottom of the screen, and a decision needs
+    # them: one is the trigger, the other is half the pot odds.
+    your_turn: bool = False
+    to_call: Optional[float] = None
 
     def to_dict(self):
         return {
             "frame_index": self.frame_index,
             "timestamp_sec": self.timestamp_sec,
             "pot": self.pot,
+            "your_turn": self.your_turn,
+            "to_call": self.to_call,
             "board_cards": self.board_cards,
             "seats": [asdict(s) for s in self.seats],
         }

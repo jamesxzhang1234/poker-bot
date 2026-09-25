@@ -920,3 +920,125 @@ def test_reads_hero_cards_out_of_the_strip():
         vision_reader.parse_payload(payload), seat_anchors.IPAD_HERO_CARD_SLOTS)
 
     assert cards == ["Ad", "Kh"]
+
+
+def test_a_seat_holding_cards_is_in_the_hand():
+    # A folded player has no cards beside their avatar; an active one has two
+    # face-down backs up and left of their plate. That is a visual yes/no,
+    # unlike the small red "Folded" text which is read on only 28% of seats.
+    import numpy as np
+    from poker_vision import seat_anchors
+    thumb = np.zeros((590, 410), dtype=np.uint8)      # quarter-scale frame
+    ax, ay = seat_anchors.IPAD_PORTRAIT["top_left"]
+    x1, y1 = int((ax - 140) * 0.25), int((ay - 100) * 0.25)
+    x2, y2 = int((ax - 20) * 0.25), int((ay - 20) * 0.25)
+    thumb[y1:y2, x1:x2] = 40                          # dark card body
+    thumb[y1 + 4:y1 + 12, x1 + 3:x2 - 3] = 190        # the light logo on the backs
+
+    assert vision_reader.seat_has_cards(thumb, (ax, ay), 0.25) is True
+
+
+def test_a_folded_seat_is_not_in_the_hand():
+    import numpy as np
+    from poker_vision import seat_anchors
+    thumb = np.zeros((590, 410), dtype=np.uint8)
+    ax, ay = seat_anchors.IPAD_PORTRAIT["top_left"]
+
+    assert vision_reader.seat_has_cards(thumb, (ax, ay), 0.25) is False
+
+
+def test_no_thumbnail_means_unknown_rather_than_folded():
+    from poker_vision import seat_anchors
+    assert vision_reader.seat_has_cards(None, seat_anchors.IPAD_PORTRAIT["top_left"],
+                                        0.25) is None
+
+
+def test_it_is_your_turn_when_the_real_action_buttons_show():
+    obs = [_obs("Fold", 289, 2258), _obs("Check", 818, 2260), _obs("Bet", 1348, 2258)]
+
+    action = vision_reader.find_action(obs, width=1640, height=2360)
+
+    assert action.your_turn is True
+    assert action.to_call is None
+
+
+def test_the_call_button_carries_what_you_owe():
+    obs = [_obs("Fold", 289, 2258), _obs("Call 0.25", 741, 2439)]
+
+    action = vision_reader.find_action(obs, width=1640, height=2360)
+
+    assert action.your_turn is True
+    assert action.to_call == 0.25
+
+
+def test_preaction_checkboxes_do_not_mean_it_is_your_turn():
+    # "Call any" / "Check / Fold" / "Straddle" are the pre-select boxes shown
+    # while WAITING. Vision sometimes splits "Check / Fold" into separate
+    # Check and Fold tokens, which look exactly like the real buttons -- so a
+    # pre-action word anywhere on the row settles it.
+    obs = [_obs("Check / Fold", 289, 2257), _obs("Call any", 823, 2258),
+           _obs("Straddle", 1346, 2257)]
+
+    assert vision_reader.find_action(obs, width=1640, height=2360).your_turn is False
+
+    split = [_obs("Check", 250, 2257), _obs("Fold", 330, 2257),
+             _obs("Call any", 823, 2258)]
+
+    assert vision_reader.find_action(split, width=1640, height=2360).your_turn is False
+
+
+def test_no_buttons_at_all_means_not_your_turn():
+    obs = [_obs("jxz", 814, 1920), _obs("27.8", 820, 1980)]
+
+    action = vision_reader.find_action(obs, width=1640, height=2360)
+
+    assert action.your_turn is False
+    assert action.to_call is None
+
+
+def test_table_state_carries_whether_it_is_your_turn_and_the_call():
+    import json
+    from poker_vision import seat_anchors
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "observations": [
+            {"text": "jxz", "x": 814, "y": 1920, "w": 51, "h": 34, "confidence": 1.0},
+            {"text": "27.8", "x": 820, "y": 1980, "w": 82, "h": 37, "confidence": 1.0},
+            {"text": "Fold", "x": 289, "y": 2258, "w": 90, "h": 38, "confidence": 1.0},
+            {"text": "Call 0.3", "x": 823, "y": 2258, "w": 120, "h": 38, "confidence": 1.0},
+        ],
+    })
+
+    state = vision_reader.build_table_state(payload, seat_anchors.IPAD_PORTRAIT)
+
+    assert state.your_turn is True
+    assert state.to_call == 0.3
+
+
+def test_in_hand_comes_from_the_cards_beside_a_seat_when_available():
+    import base64, json
+    import cv2
+    import numpy as np
+    from poker_vision import seat_anchors
+
+    thumb = np.zeros((590, 410), dtype=np.uint8)
+    ax, ay = seat_anchors.IPAD_PORTRAIT["top_left"]
+    x1, y1 = int((ax - 140) * 0.25), int((ay - 100) * 0.25)
+    x2, y2 = int((ax - 20) * 0.25), int((ay - 20) * 0.25)
+    thumb[y1:y2, x1:x2] = 40
+    thumb[y1 + 4:y1 + 12, x1 + 3:x2 - 3] = 190
+
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "table_thumb": base64.b64encode(cv2.imencode(".jpg", thumb)[1].tobytes()).decode(),
+        "table_thumb_scale": 0.25,
+        "observations": [
+            {"text": "drake81", "x": 511, "y": 565, "w": 123, "h": 29, "confidence": 1.0},
+            {"text": "7.75", "x": 509, "y": 620, "w": 72, "h": 34, "confidence": 1.0},
+        ],
+    })
+
+    state = vision_reader.build_table_state(payload, seat_anchors.IPAD_PORTRAIT)
+
+    seat = [s for s in state.seats if s.seat_id == "top_left"][0]
+    assert seat.in_hand is True
