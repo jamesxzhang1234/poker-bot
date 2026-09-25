@@ -247,6 +247,17 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   effectively free. Don't swap it for a faster one without first changing
   what makes this cheap.
 
+- **At showdown the client dims the cards not in the winning hand, and one
+  brightness cutoff cannot read both states.** A dimmed card's ink falls below
+  any threshold that suits a normal one -- a real five-card board came back as
+  a *single* card, because `read_board` stops at the first slot it cannot read
+  and the second was dimmed. `best_rank` now tries 170, 140 and 110 and takes
+  the highest-scoring match: bright cards score best around 140-170, dimmed
+  ones only register at 110. The brightness presence gate was dropped at the
+  same time; a matched rank is the better presence test, since felt, chips and
+  the table watermark score 0.18-0.39 against the templates and never reach
+  the 0.55 bar. Watch for this dimming generally -- it also broke hero suits.
+
 - **Who is still in the hand comes from the cards beside a seat, not the
   "Folded" text.** The label is read on only 28% of seats, which is useless to
   anything downstream -- a decision needs the opponent count. A folded player

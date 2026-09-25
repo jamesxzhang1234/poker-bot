@@ -81,3 +81,33 @@ def test_a_slot_of_bare_felt_is_not_a_card():
     cv2.circle(frame, (70, 90), 40, (100, 70, 40), 2)   # texture, still dark
 
     assert board_reader.read_board(frame, SLOTS, RANK_OFFSET) == []
+
+
+def test_a_dimmed_card_is_still_read():
+    # At showdown the client greys out the cards not in the winning hand. A
+    # single bright threshold finds no ink on those at all -- a real five-card
+    # board came back as one card, because read_board stops at the first slot
+    # it cannot read and the second card was dimmed.
+    import cv2
+    import numpy as np
+    from poker_vision import rank_templates
+    frame = np.zeros((200, 10 + 5 * 140, 3), dtype=np.uint8)
+    frame[:] = (90, 60, 30)
+    templates = rank_templates.load()
+    for i, (rank, bgr, ink) in enumerate([
+            ("7", SUIT_BGR["c"], 255),          # normal card, white ink
+            ("T", (20, 18, 70), 130),           # dimmed card, grey ink
+            ("6", SUIT_BGR["h"], 255)]):
+        x1, y1, x2, y2 = SLOTS[i]
+        frame[y1:y2, x1:x2] = bgr
+        cv2.circle(frame, ((x1 + x2) // 2, y1 + 115), 34, (ink, ink, ink), -1)
+        gx1, gy1, gx2, gy2 = RANK_OFFSET
+        glyph = cv2.resize(templates[rank][0], (gx2 - gx1, gy2 - gy1),
+                           interpolation=cv2.INTER_NEAREST)
+        region = frame[y1 + gy1:y1 + gy2, x1 + gx1:x1 + gx2]
+        region[glyph > 127] = (ink, ink, ink)
+
+    board = board_reader.read_board(frame, SLOTS, RANK_OFFSET)
+
+    assert len(board) == 3, board          # the dimmed card must not truncate it
+    assert board[0][0] == "7" and board[1][0] == "T" and board[2][0] == "6"
