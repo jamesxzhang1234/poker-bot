@@ -21,25 +21,45 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import seat_anchors, vision_reader
+from collections import namedtuple
+
+from . import regions, seat_anchors, vision_reader
 from .table_state import is_plausible_table
 from .text_summary import format_summary
 
 HELPER = Path(__file__).resolve().parent.parent / "tools" / "ipad_capture" / "capture"
 
-# Frame size -> anchor set. Keyed on the captured resolution because that is
-# what identifies the device; a frame from anything not listed here is skipped
-# rather than run against the nearest layout, since guessing would produce a
-# plausible-looking but wrong table.
-_ANCHORS_BY_SIZE = {
-    seat_anchors.IPAD_PORTRAIT_SIZE: seat_anchors.IPAD_PORTRAIT,
-    seat_anchors.IPHONE_PORTRAIT_SIZE: seat_anchors.IPHONE_PORTRAIT,
+Layout = namedtuple("Layout", "anchors board_slots rank_offset")
+
+# Frame size -> that device's layout. Keyed on the captured resolution because
+# that is what identifies the device; a frame from anything not listed here is
+# skipped rather than run against the nearest layout, since guessing would
+# produce a plausible-looking but wrong table.
+_LAYOUT_BY_SIZE = {
+    seat_anchors.IPAD_PORTRAIT_SIZE: Layout(
+        seat_anchors.IPAD_PORTRAIT,
+        seat_anchors.IPAD_BOARD_SLOTS,
+        seat_anchors.IPAD_RANK_OFFSET),
+    # The iPhone's board geometry already lives in regions.py, measured by
+    # hand for the fixed-region parser; reuse it rather than keeping a second
+    # copy that can drift. Its slots are at the reference resolution, which is
+    # this frame size exactly, so no rescaling is needed here.
+    seat_anchors.IPHONE_PORTRAIT_SIZE: Layout(
+        seat_anchors.IPHONE_PORTRAIT,
+        list(regions.BOARD_SLOTS),
+        regions.RANK_OFFSET),
 }
 
 
+def layout_for(width, height):
+    """The layout for a captured frame size, or None if unrecognised."""
+    return _LAYOUT_BY_SIZE.get((width, height))
+
+
 def anchors_for(width, height):
-    """The anchor set for a captured frame size, or None if unrecognised."""
-    return _ANCHORS_BY_SIZE.get((width, height))
+    """The seat anchors for a captured frame size, or None if unrecognised."""
+    layout = layout_for(width, height)
+    return layout.anchors if layout else None
 
 
 def iter_states(lines, anchors=None, on_error=None):
@@ -58,12 +78,16 @@ def iter_states(lines, anchors=None, on_error=None):
             if on_error:
                 on_error(f"unreadable payload: {exc}")
             continue
-        chosen = anchors or anchors_for(frame.width, frame.height)
+        layout = layout_for(frame.width, frame.height)
+        chosen = anchors or (layout.anchors if layout else None)
         if chosen is None:
             if on_error:
-                on_error(f"no anchor set for {frame.width}x{frame.height}")
+                on_error(f"no layout for {frame.width}x{frame.height}")
             continue
-        yield vision_reader.build_table_state(line, chosen)
+        yield vision_reader.build_table_state(
+            line, chosen,
+            board_slots=layout.board_slots if layout else None,
+            rank_offset=layout.rank_offset if layout else None)
 
 
 def run(lines, anchors=None, out=print, require_plausible=True):

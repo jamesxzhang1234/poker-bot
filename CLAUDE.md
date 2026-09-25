@@ -117,7 +117,7 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
 | `vision_reader.py` | **The Vision path.** Turns the capture helper's JSON (recognised text + pixel positions) into a `TableState`: `parse_payload`, `parse_amount`, `find_seat_plates`, `find_pot`, `assign_to_seats`, `build_table_state`. Locates text by recognition, then assigns it to a seat by proximity — no per-field boxes. | — (server/main not yet wired) |
 | `seat_anchors.py` | One (x, y) anchor per seat, per device: `IPAD_PORTRAIT`, `IPHONE_PORTRAIT`. Derived by clustering real frames, not hand-measured. | vision_reader, vision_live |
 | `rank_templates.py` | Card ranks by template matching against stored exemplars (`data/rank_templates.npz`). Several exemplars per rank, because one set does **not** serve both devices. | board_reader |
-| `board_reader.py` | Reads the community board: rank from `rank_templates`, suit from `card_vision.classify_suit`. Has its own brightness-based card-presence test. | — (not yet wired into the live path) |
+| `board_reader.py` | Reads the community board: rank from `rank_templates`, suit from `card_vision.classify_suit`. Has its own brightness-based card-presence test. | vision_reader |
 | `vision_live.py` | Live runner: spawns the capture helper, turns its JSON lines into `TableState`, prints `format_summary`. Picks the anchor set from the frame size and skips a size it doesn't know rather than guessing. **No work queue on purpose** — the helper spends ~90ms/frame and this side ~0.15ms, so the consumer cannot fall behind; frames are dropped in the helper, where the diff gate lives. | — |
 | `tools/ipad_capture/capture.swift` | Swift helper: sets the CoreMediaIO flag, opens the USB iOS device, runs one `VNRecognizeTextRequest` per frame, emits JSON lines. `--dir` replays saved frames, `--live` captures. | — |
 | `overlay.py` | **Dead code.** Nothing imports it (leftover from the deleted cv2-window UI). Safe to delete. | — |
@@ -196,6 +196,16 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   working iPhone path, and a calibration change needs the full before/after
   sweep. A max-channel test would likely separate navy from bright blue more
   robustly than the sum does.
+
+- **The helper sends text plus one small pixel strip, not the whole frame.**
+  Everything except card ranks is read from recognised text, but ranks are
+  template-matched and need pixels. Shipping the 4MB frame per capture would
+  throw away the point of doing OCR in the helper, so it attaches just the
+  board band (~120KB base64) as `board_strip`, with the crop rect it used in
+  `board_strip_rect`. The consumer maps slots from that rect rather than
+  keeping its own copy of the fractions, so the two sides cannot drift. The
+  band works for both devices because the vertical span is nearly identical
+  (0.417-0.483 of frame height on the iPad, 0.418-0.483 on the iPhone).
 
 - **A live stdout stream must be line-buffered.** `vision_live` reconfigures
   stdout on startup: Python block-buffers when stdout is a pipe or file, so

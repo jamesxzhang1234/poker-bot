@@ -354,3 +354,121 @@ def test_status_is_normalised_to_a_canonical_spelling():
     statuses = vision_reader.find_statuses(obs, width=1640, height=2360)
 
     assert statuses == {("Jaimie73", 404, 895): "Folded"}
+
+
+def _png_b64(img):
+    import base64, cv2
+    return base64.b64encode(cv2.imencode(".png", img)[1].tobytes()).decode()
+
+
+def test_payload_carries_a_decoded_board_strip():
+    # The helper sends recognised text, not pixels -- but card ranks are
+    # template-matched, which needs pixels. Rather than ship a 4MB frame it
+    # attaches just the board band as a small PNG.
+    import json
+    import numpy as np
+    strip = np.full((120, 600, 3), 40, dtype=np.uint8)
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "board_strip": _png_b64(strip),
+        "board_strip_rect": [0.18, 0.40, 0.63, 0.10],
+        "observations": [],
+    })
+
+    frame = vision_reader.parse_payload(payload)
+
+    assert frame.board_strip is not None
+    assert frame.board_strip.shape == (120, 600, 3)
+    assert frame.board_strip_rect == (0.18, 0.40, 0.63, 0.10)
+
+
+def test_board_strip_is_none_when_the_helper_sends_no_pixels():
+    import json
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "observations": [],
+    })
+
+    frame = vision_reader.parse_payload(payload)
+
+    assert frame.board_strip is None
+    assert frame.board_strip_rect is None
+
+
+def test_translates_frame_slots_into_strip_coordinates():
+    # The strip is a crop, so a slot's frame coordinates have to be shifted by
+    # the crop's origin and rescaled by how much the strip was resized.
+    slots = [(495, 985, 613, 1139)]
+    rect = (0.18, 0.40, 0.63, 0.10)          # x, y, w, h as fractions
+
+    moved = vision_reader.slots_in_strip(
+        slots, rect, frame_size=(1640, 2360), strip_size=(1033, 236))
+
+    # crop origin is (0.18*1640, 0.40*2360) = (295.2, 944); no rescale here
+    assert moved == [(200, 41, 318, 195)]
+
+
+def test_slot_translation_accounts_for_a_rescaled_strip():
+    slots = [(495, 985, 613, 1139)]
+    rect = (0.18, 0.40, 0.63, 0.10)
+
+    moved = vision_reader.slots_in_strip(
+        slots, rect, frame_size=(1640, 2360), strip_size=(516, 118))   # half size
+
+    assert moved == [(100, 20, 159, 98)]
+
+
+def test_table_state_reads_the_board_from_the_attached_strip():
+    import json
+    import cv2
+    import numpy as np
+    from poker_vision import rank_templates, seat_anchors
+
+    # Build a frame-sized canvas, draw two cards into the real iPad board
+    # slots, then hand over only the cropped strip -- exactly what the helper
+    # sends.
+    frame = np.full((2360, 1640, 3), 30, dtype=np.uint8)
+    templates = rank_templates.load()
+    for i, (rank, bgr) in enumerate([("Q", (160, 60, 40)), ("7", (40, 40, 160))]):
+        x1, y1, x2, y2 = seat_anchors.IPAD_BOARD_SLOTS[i]
+        frame[y1:y2, x1:x2] = bgr
+        cv2.circle(frame, ((x1 + x2) // 2, y1 + 110), 30, (255, 255, 255), -1)
+        gx1, gy1, gx2, gy2 = seat_anchors.IPAD_RANK_OFFSET
+        glyph = cv2.resize(templates[rank][0], (gx2 - gx1, gy2 - gy1),
+                           interpolation=cv2.INTER_NEAREST)
+        region = frame[y1 + gy1:y1 + gy2, x1 + gx1:x1 + gx2]
+        region[glyph > 127] = (255, 255, 255)
+
+    rect = (0.18, 0.40, 0.63, 0.10)
+    sx, sy = int(rect[0] * 1640), int(rect[1] * 2360)
+    sw, sh = int(rect[2] * 1640), int(rect[3] * 2360)
+    strip = frame[sy:sy + sh, sx:sx + sw]
+
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "board_strip": _png_b64(strip), "board_strip_rect": list(rect),
+        "observations": [],
+    })
+
+    state = vision_reader.build_table_state(
+        payload, seat_anchors.IPAD_PORTRAIT,
+        board_slots=seat_anchors.IPAD_BOARD_SLOTS,
+        rank_offset=seat_anchors.IPAD_RANK_OFFSET)
+
+    assert state.board_cards == ["Qd", "7h"]
+
+
+def test_board_is_empty_when_the_helper_sent_no_strip():
+    import json
+    from poker_vision import seat_anchors
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "observations": [],
+    })
+
+    state = vision_reader.build_table_state(
+        payload, seat_anchors.IPAD_PORTRAIT,
+        board_slots=seat_anchors.IPAD_BOARD_SLOTS,
+        rank_offset=seat_anchors.IPAD_RANK_OFFSET)
+
+    assert state.board_cards == []

@@ -64,3 +64,59 @@ def test_anchors_can_be_forced_for_an_unknown_frame_size():
         [_payload(width=1640, height=2360)], anchors=seat_anchors.IPAD_PORTRAIT))
 
     assert states[0].seats[0].name == "drake81"
+
+
+def test_layout_lookup_returns_board_geometry_too():
+    layout = vision_live.layout_for(*seat_anchors.IPAD_PORTRAIT_SIZE)
+
+    assert layout.anchors is seat_anchors.IPAD_PORTRAIT
+    assert layout.board_slots == seat_anchors.IPAD_BOARD_SLOTS
+    assert layout.rank_offset == seat_anchors.IPAD_RANK_OFFSET
+
+
+def test_layout_lookup_covers_the_iphone_too():
+    layout = vision_live.layout_for(*seat_anchors.IPHONE_PORTRAIT_SIZE)
+
+    assert layout.anchors is seat_anchors.IPHONE_PORTRAIT
+    assert len(layout.board_slots) == 5
+
+
+def test_layout_lookup_is_none_for_an_unknown_device():
+    assert vision_live.layout_for(800, 600) is None
+
+
+def test_states_carry_the_board_when_the_payload_has_a_strip():
+    # Drives the whole chain the helper feeds: payload with a strip -> layout
+    # picked from the frame size -> board template-matched from the strip.
+    import base64
+    import cv2
+    import numpy as np
+    from poker_vision import rank_templates
+
+    frame = np.full((2360, 1640, 3), 30, dtype=np.uint8)
+    templates = rank_templates.load()
+    # BGR, matching what card_vision.classify_suit documents from real cards:
+    # diamonds are blue-dominant, clubs green-dominant.
+    for i, (rank, bgr) in enumerate([("K", (160, 60, 40)), ("9", (50, 150, 50))]):
+        x1, y1, x2, y2 = seat_anchors.IPAD_BOARD_SLOTS[i]
+        frame[y1:y2, x1:x2] = bgr
+        cv2.circle(frame, ((x1 + x2) // 2, y1 + 110), 30, (255, 255, 255), -1)
+        gx1, gy1, gx2, gy2 = seat_anchors.IPAD_RANK_OFFSET
+        glyph = cv2.resize(templates[rank][0], (gx2 - gx1, gy2 - gy1),
+                           interpolation=cv2.INTER_NEAREST)
+        region = frame[y1 + gy1:y1 + gy2, x1 + gx1:x1 + gx2]
+        region[glyph > 127] = (255, 255, 255)
+
+    rect = (0.18, 0.40, 0.63, 0.10)
+    sx, sy = int(rect[0] * 1640), int(rect[1] * 2360)
+    strip = frame[sy:sy + int(rect[3] * 2360), sx:sx + int(rect[2] * 1640)]
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "board_strip": base64.b64encode(cv2.imencode(".png", strip)[1].tobytes()).decode(),
+        "board_strip_rect": list(rect),
+        "observations": [],
+    })
+
+    state = list(vision_live.iter_states([payload]))[0]
+
+    assert state.board_cards == ["Kd", "9c"]

@@ -8,12 +8,16 @@ OCRs each one -- here the text arrives already located, so this module
 assigns it to seats by proximity to a seat anchor instead of by calibrated
 per-field boxes.
 """
+import base64
 import json
 import re
 from dataclasses import dataclass
 from typing import List
 
-from . import seat_anchors
+import cv2
+import numpy as np
+
+from . import board_reader, seat_anchors
 from .table_state import Seat, TableState
 
 
@@ -39,12 +43,29 @@ class VisionFrame:
     # from. Key on it instead of on line order -- an undecodable frame is
     # skipped rather than emitted, so position does not survive a bad file.
     source: str = None
+    # The board band as pixels, decoded. Card ranks are template-matched, so
+    # that part of the pipeline needs pixels while everything else needs only
+    # text -- the helper attaches this one small crop rather than the whole
+    # 4MB frame. None when the helper sent text only.
+    board_strip: "np.ndarray" = None
+    # Where that crop came from, as (x, y, w, h) fractions of the frame.
+    board_strip_rect: tuple = None
 
 
 def parse_payload(payload):
     """Parse one JSON payload (str or already-decoded dict) from the helper."""
     data = json.loads(payload) if isinstance(payload, (str, bytes)) else payload
+
+    strip = None
+    encoded = data.get("board_strip")
+    if encoded:
+        buffer = np.frombuffer(base64.b64decode(encoded), dtype=np.uint8)
+        strip = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+    rect = data.get("board_strip_rect")
+
     return VisionFrame(
+        board_strip=strip,
+        board_strip_rect=tuple(rect) if rect else None,
         frame_index=data["frame_index"],
         timestamp_sec=data["timestamp_sec"],
         width=data["width"],
@@ -228,14 +249,18 @@ def assign_to_seats(plates, anchors, width, height):
     return {seat_id: plate for seat_id, (_, plate) in best.items()}
 
 
-def build_table_state(payload, anchors):
+def build_table_state(payload, anchors, board_slots=None, rank_offset=None):
     """Turn one Vision payload into a TableState.
 
-    Only fills what a whole-frame text read can establish: who is seated,
-    their stacks, and the pot. Board cards and position badges are not set
-    here -- Vision reads card *ranks* but not suits, and picks badges up only
-    intermittently, so both stay with the pixel-level readers that handle them
-    properly (card_vision for suits, the badge crops for D/SB/BB).
+    Seats, stacks, the pot and each seat's status come from the recognised
+    text. Board cards do not: they are template-matched from the pixel strip
+    the helper attaches, because an isolated rank glyph is the one thing
+    whole-frame recognition reliably misses. Pass `board_slots` and
+    `rank_offset` for the device to enable that; without them, or without a
+    strip in the payload, board_cards stays empty.
+
+    Position badges are still unset -- whole-frame recognition picks them up
+    only intermittently and they want their own cropped read.
     """
     frame = parse_payload(payload)
     plates = find_seat_plates(frame.observations, frame.width, frame.height)
@@ -253,11 +278,20 @@ def build_table_state(payload, anchors):
             in_hand=is_in_hand(status),
             is_hero=(seat_id == seat_anchors.HERO_SEAT_ID),
         ))
+    board = []
+    if board_slots and rank_offset is not None and frame.board_strip is not None \
+            and frame.board_strip_rect is not None:
+        strip = frame.board_strip
+        local = slots_in_strip(board_slots, frame.board_strip_rect,
+                               frame_size=(frame.width, frame.height),
+                               strip_size=(strip.shape[1], strip.shape[0]))
+        board = board_reader.read_board(strip, local, rank_offset)
+
     return TableState(
         frame_index=frame.frame_index,
         timestamp_sec=frame.timestamp_sec,
         seats=seats,
-        board_cards=[],
+        board_cards=board,
         pot=find_pot(frame.observations, frame.width, frame.height),
     )
 
@@ -330,3 +364,28 @@ def is_in_hand(status):
     if word in _PERSISTENT_STATUS:
         return False
     return word in _ACTION_STATUS
+
+
+def slots_in_strip(slots, rect, frame_size, strip_size):
+    """Translate board slots from frame coordinates into the strip's.
+
+    The strip is a crop of the frame, possibly resized, so a slot has to be
+    shifted by the crop's origin and scaled by the resize. Doing this from the
+    rect the helper reports -- rather than from a second copy of the crop
+    fractions here -- keeps the two sides from drifting apart.
+    """
+    frame_w, frame_h = frame_size
+    strip_w, strip_h = strip_size
+    fx, fy, fw, fh = rect
+
+    origin_x, origin_y = fx * frame_w, fy * frame_h
+    scale_x = strip_w / (fw * frame_w)
+    scale_y = strip_h / (fh * frame_h)
+
+    # Rounded, not truncated: truncation biases every slot left and up by up
+    # to a pixel, which walks the rank crop off the glyph it is meant to frame.
+    return [
+        (round((x1 - origin_x) * scale_x), round((y1 - origin_y) * scale_y),
+         round((x2 - origin_x) * scale_x), round((y2 - origin_y) * scale_y))
+        for x1, y1, x2, y2 in slots
+    ]

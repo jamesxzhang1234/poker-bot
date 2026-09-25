@@ -17,11 +17,37 @@ import CoreMediaIO
 import Vision
 import AppKit
 
+// MARK: - Board strip
+
+// Card ranks are template-matched on the Python side, which needs pixels --
+// but everything else needs only text, and shipping the whole 4MB frame per
+// capture would throw away the main benefit of doing OCR here. So one small
+// band is attached instead.
+//
+// These fractions cover the board on both layouts: the vertical band is
+// almost identical across devices (0.417-0.483 of frame height on the iPad's
+// 1640x2360 and 0.418-0.483 on the iPhone's 1206x2622), and the horizontal
+// span is the wider of the two. The rect travels with the payload so the
+// consumer maps slots from it rather than keeping a second copy of these
+// numbers.
+let BOARD_RECT = (x: 0.18, y: 0.40, w: 0.63, h: 0.10)
+
+func boardStrip(_ cg: CGImage) -> String? {
+    let W = Double(cg.width), H = Double(cg.height)
+    let rect = CGRect(x: BOARD_RECT.x * W, y: BOARD_RECT.y * H,
+                      width: BOARD_RECT.w * W, height: BOARD_RECT.h * H)
+    guard let cropped = cg.cropping(to: rect) else { return nil }
+    let rep = NSBitmapImageRep(cgImage: cropped)
+    guard let png = rep.representation(using: .png, properties: [:]) else { return nil }
+    return png.base64EncodedString()
+}
+
 // MARK: - JSON output
 
 struct Emitter {
     static func emit(index: Int, timestamp: Double, width: Int, height: Int,
-                     observations: [(String, CGRect, Float)], source: String? = nil) {
+                     observations: [(String, CGRect, Float)], source: String? = nil,
+                     strip: String? = nil) {
         var rows: [[String: Any]] = []
         let W = Double(width), H = Double(height)
         for (text, bb, conf) in observations {
@@ -45,6 +71,11 @@ struct Emitter {
         // and anything zipping payloads against a directory listing by
         // position would silently pair every later frame with the wrong one.
         if let source = source { payload["source"] = source }
+        if let strip = strip {
+            payload["board_strip"] = strip
+            payload["board_strip_rect"] = [BOARD_RECT.x, BOARD_RECT.y,
+                                           BOARD_RECT.w, BOARD_RECT.h]
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let line = String(data: data, encoding: .utf8) else { return }
         print(line)
@@ -94,7 +125,8 @@ func runDirectory(_ dir: String, fast: Bool) {
             String(format: "%.0fms %d obs\n", Date().timeIntervalSince(t)*1000, obs.count)
             .data(using: .utf8)!)
         Emitter.emit(index: i, timestamp: Date().timeIntervalSince1970,
-                     width: cg.width, height: cg.height, observations: obs, source: name)
+                     width: cg.width, height: cg.height, observations: obs, source: name,
+                     strip: boardStrip(cg))
     }
 }
 
@@ -159,7 +191,8 @@ final class LiveCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
         lastEmit = Date()
         let obs = recogniseText(cg, fast: fast)
         Emitter.emit(index: index, timestamp: Date().timeIntervalSince1970,
-                     width: cg.width, height: cg.height, observations: obs)
+                     width: cg.width, height: cg.height, observations: obs,
+                     strip: boardStrip(cg))
         index += 1
     }
 }
