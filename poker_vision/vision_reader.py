@@ -17,7 +17,7 @@ from typing import List
 import cv2
 import numpy as np
 
-from . import board_reader, card_vision, number_ocr, parser, seat_anchors
+from . import board_reader, card_vision, number_ocr, position_inference, seat_anchors
 from .table_state import Seat, TableState
 
 
@@ -475,9 +475,7 @@ def build_table_state(payload, anchors, board_slots=None, rank_offset=None,
 
     # One badge is enough to place the whole table: infer_positions rotates
     # the occupied seats in action order from whichever seat has a read badge.
-    # Reused from the fixed-region parser rather than reimplemented -- both
-    # layouts use the same seat-ids, so the same rotation applies.
-    parser.infer_positions(seats)
+    position_inference.infer_positions(seats)
     board = []
     if board_slots and rank_offset is not None and frame.board_strip is not None \
             and frame.board_strip_rect is not None:
@@ -552,7 +550,7 @@ def find_statuses(observations, width, height):
 
 # The dealer/blind badges. Note Vision never returns a bare "D" -- a single
 # character is too isolated for its text detector -- so in practice only SB
-# and BB arrive. That is enough: parser.infer_positions rotates the rest of
+# and BB arrive. That is enough: infer_positions rotates the rest of
 # the table from any one badge.
 _BADGE_WORDS = {"d": "D", "sb": "SB", "bb": "BB"}
 

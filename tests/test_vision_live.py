@@ -45,10 +45,9 @@ def test_picks_the_anchor_set_matching_the_frame_size():
     ipad = list(vision_live.iter_states([_payload(width=1640, height=2360)]))[0]
     assert ipad.seats[0].seat_id == "top_left"
 
-    # The same plate coordinates on an iPhone-sized frame are nowhere near
-    # that layout's top_left anchor, so they must not resolve to it.
-    iphone = list(vision_live.iter_states([_payload(width=1206, height=2622)]))[0]
-    assert iphone.seats == []
+    # An unsupported frame size is skipped entirely, not read with the
+    # nearest layout.
+    assert list(vision_live.iter_states([_payload(width=1206, height=2622)])) == []
 
 
 def test_an_unknown_frame_size_is_skipped_rather_than_guessed():
@@ -74,11 +73,12 @@ def test_layout_lookup_returns_board_geometry_too():
     assert layout.rank_offset == seat_anchors.IPAD_RANK_OFFSET
 
 
-def test_layout_lookup_covers_the_iphone_too():
-    layout = vision_live.layout_for(*seat_anchors.IPHONE_PORTRAIT_SIZE)
-
-    assert layout.anchors is seat_anchors.IPHONE_PORTRAIT
-    assert len(layout.board_slots) == 5
+def test_the_iphone_is_no_longer_a_supported_device():
+    # The iPad is the only device this path is calibrated and validated for.
+    # An iPhone frame used to be read with geometry borrowed from the legacy
+    # fixed-region parser, which was never checked against this path and
+    # misread hero cards. Skipping is better than reading it wrong.
+    assert vision_live.layout_for(*seat_anchors.IPHONE_PORTRAIT_SIZE) is None
 
 
 def test_layout_lookup_is_none_for_an_unknown_device():

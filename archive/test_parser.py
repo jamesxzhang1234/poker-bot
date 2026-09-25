@@ -1,4 +1,4 @@
-from poker_vision.parser import infer_positions
+from archive.parser import infer_positions
 from poker_vision.table_state import Seat
 
 

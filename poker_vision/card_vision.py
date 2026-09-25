@@ -2,11 +2,11 @@
 import cv2
 import numpy as np
 
-from . import regions
 from .ocr_utils import _cascade, _ocr
 
 # Reference BGR colors sampled from real card backgrounds (see calibration
-# notes in regions.py). Suits are color-coded by this client, so we classify
+# notes in the device's calibration module). Suits are color-coded by this
+# client, so we classify
 # by dominant channel + overall brightness rather than needing per-rank
 # templates for every suit.
 _RANK_WHITELIST = "23456789TJQKA"
@@ -141,8 +141,14 @@ def _ocr_rank(region_bgr):
     return _read_rank(mask, (10, 8, 13, 7, 6))
 
 
-def read_rank(card_crop):
-    dx1, dy1, dx2, dy2 = regions.RANK_OFFSET
+def read_rank(card_crop, rank_offset):
+    """Read a flat card's rank from the corner box at `rank_offset`.
+
+    The offset is passed in rather than read from a module constant so this
+    file does not depend on any one device's pixel calibration -- that
+    coupling is what kept the iPhone's regions.py loaded by the capture path.
+    """
+    dx1, dy1, dx2, dy2 = rank_offset
     corner = card_crop[dy1:dy2, dx1:dx2]
     return _ocr_rank(corner)
 
@@ -289,13 +295,13 @@ def read_rank_from_top(card_crop, top_fractions=(0.4, 0.45, 0.5, 0.55, 0.6, 0.65
     return None
 
 
-def parse_card(card_crop):
+def parse_card(card_crop, rank_offset):
     """Given a cropped card slot image, return e.g. '7c', 'Th', or None if
     the slot is empty / unreadable."""
     if not is_card_present(card_crop):
         return None
     suit = classify_suit(_sample_bg_color(card_crop))
-    rank = read_rank(card_crop)
+    rank = read_rank(card_crop, rank_offset)
     if rank is None:
         return None
     return f"{rank}{suit}"

@@ -4,17 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A vision layer that reads a screenshot of a PurePoker **practice / play-money**
-mobile table (portrait, 1206x2622) and emits structured table state per frame:
-seat positions, stacks, board/hole cards, pot, per-seat status. Class project.
-Not a real-money-site tool, and not intended to become one.
+A vision layer that reads a live PurePoker **practice / play-money** table off
+a USB-attached **iPad** (portrait, 1640x2360) and emits structured table state
+per frame: seat positions, stacks, board and hole cards, pot, per-seat status.
+Class project. Not a real-money-site tool, and not intended to become one.
+
+**The iPad is the only supported device.** The iPhone push-capture pipeline
+that preceded it lives in `archive/`, still runnable, and is described in
+`archive/__init__.py`. An iPhone-sized frame reaching the live path is now
+skipped rather than read with geometry that was never validated for it.
 
 Two deliberate scope constraints that shape the code — don't "fix" them:
 
 - **Single-frame only.** No cross-frame/session memory. Players can leave
   mid-hand, so anything that remembers state across screenshots was judged
   more harmful than helpful. `infer_positions` works within one frame.
-- **Capture: push-based today, native device capture is the chosen next step.**
+- **Capture: native iPad only. The push pipeline is archived.**
   An iOS Shortcuts automation POSTs every screenshot to a local Flask server;
   that is what `server.py` implements and it is still the only working path.
   Two corrections to the older note here, both measured rather than assumed
@@ -46,7 +51,8 @@ Two deliberate scope constraints that shape the code — don't "fix" them:
 source venv/bin/activate          # Python 3.9 venv at ./venv
 brew install tesseract            # OCR binary; required for the pipeline AND the tests
 
-python -m pytest tests/ -q                                   # full suite (~4s)
+python -m pytest tests/ archive/ -q                          # full suite (~6s)
+python -m pytest tests/ -q                                   # live path only (~2s)
 python -m pytest tests/test_table_parser.py -q               # one file
 python -m pytest tests/test_parser.py::test_infers_sb_and_bb_from_known_dealer -q   # one test
 ```
@@ -126,7 +132,9 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
 | `dashboard.py` | Renders a `TableState` as a fixed block rewritten in place, `*` marking what moved and `[HELD]` marking a stale one. Pure: state in, string out. Holds the previous state **for display only** — that memory never reaches the parser. | vision_live |
 | `vision_live.py` | Live runner: spawns the capture helper, turns its JSON lines into `TableState`, prints `format_summary`. Picks the anchor set from the frame size and skips a size it doesn't know rather than guessing. **No work queue on purpose** — the helper spends ~90ms/frame and this side ~0.15ms, so the consumer cannot fall behind; frames are dropped in the helper, where the diff gate lives. | — |
 | `tools/ipad_capture/capture.swift` | Swift helper: sets the CoreMediaIO flag, opens the USB iOS device, runs one `VNRecognizeTextRequest` per frame, emits JSON lines. `--dir` replays saved frames, `--live` captures. | — |
-| `overlay.py` | **Dead code.** Nothing imports it (leftover from the deleted cv2-window UI). Safe to delete. | — |
+| `position_inference.py` | `infer_positions` — names every occupied seat's position from one badge read in the same frame. Lifted out of the parser so the capture path need not import the iPhone calibration to place positions. | vision_reader |
+| `session.py` | Blind sizes typed in at launch, written to `frames/session.json` for a later consumer. Not specific to how frames arrive. | vision_live, archive/server |
+| **`archive/`** | The retired iPhone pipeline: `server.py` (Flask push), `parser.py` (fixed-region), `regions.py` (hand-measured 1206x2622 calibration), `main.py`, `overlay.py`, and their tests. Kept runnable; imports shared machinery from `poker_vision`. | — |
 
 ### Things that only make sense if you know the history
 

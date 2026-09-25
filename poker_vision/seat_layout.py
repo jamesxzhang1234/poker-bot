@@ -6,7 +6,7 @@ names (which this doesn't concern itself with at all) -- this module
 answers one question: given regions.SEATS's screen-slot seat-ids, what
 order do they act in? parser.infer_positions is the sole consumer.
 """
-from . import regions
+from . import seat_anchors
 
 # Action-order direction around the table (D -> SB -> BB -> UTG -> ... -> back
 # to D), i.e. the direction seats are dealt to, not raw screen position.
@@ -29,9 +29,11 @@ SEAT_ORDER = [
     "top_left",
 ]
 
-# regions.SEATS is the source of truth for which seat-ids exist; catch a
-# renamed/added/removed seat here, loudly, at import time, rather than
-# relying on this list and that dict happening to stay in sync by hand.
-assert set(SEAT_ORDER) == set(regions.SEATS.keys()), (
-    "seat_layout.SEAT_ORDER is out of sync with regions.SEATS's seat-ids"
+# seat_anchors is the source of truth for which seat-ids exist on the
+# supported device; catch a renamed/added/removed seat here, loudly, at import
+# time, rather than relying on this list and that dict happening to stay in
+# sync by hand. This used to assert against regions.SEATS, which is the
+# iPhone's calibration -- it now checks the device actually in use.
+assert set(SEAT_ORDER) == set(seat_anchors.IPAD_PORTRAIT.keys()), (
+    "seat_layout.SEAT_ORDER is out of sync with seat_anchors.IPAD_PORTRAIT"
 )

@@ -12,8 +12,8 @@ matching the rest of this test suite (see test_number_ocr.py).
 import cv2
 import numpy as np
 
-from poker_vision import regions
-from poker_vision.parser import TableParser
+from archive import regions
+from archive.parser import TableParser
 
 
 def _blank_frame():

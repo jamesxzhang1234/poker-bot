@@ -20,36 +20,10 @@ import cv2
 from flask import Flask, request
 
 from .parser import TableParser
-from .table_state import is_plausible_table
-from .text_summary import format_summary
+from poker_vision.table_state import is_plausible_table
+from poker_vision.text_summary import format_summary
 
 DEFAULT_INCOMING_DIR = Path("frames/incoming")
-DEFAULT_SESSION_FILE = Path("frames/session.json")
-
-_BLINDS_PATTERN = re.compile(r"^(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)$")
-
-
-def parse_blinds(text):
-    """Parse a 'SB/BB' blind-size string (e.g. '1/2') into (sb, bb) floats.
-    Raises ValueError with a clear message on malformed input."""
-    match = _BLINDS_PATTERN.match(text.strip())
-    if not match:
-        raise ValueError(f"blinds must be in SB/BB format like '1/2', got {text!r}")
-    return float(match.group(1)), float(match.group(2))
-
-
-def write_session_info(path, blinds_raw, small_blind, big_blind):
-    """Persist the operator-provided blind sizes for this capture session
-    so a later consumer (e.g. a future decision/solver component) can read
-    them without re-parsing the command line."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({
-        "blinds": blinds_raw,
-        "small_blind": small_blind,
-        "big_blind": big_blind,
-        "started_at": datetime.now().isoformat(),
-    }, indent=2))
 
 
 def create_app(incoming_dir, work_queue):

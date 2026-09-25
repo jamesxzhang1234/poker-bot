@@ -25,7 +25,8 @@ from pathlib import Path
 
 from collections import namedtuple
 
-from . import dashboard, hero_cards, regions, seat_anchors, vision_reader
+from . import dashboard, hero_cards, seat_anchors, vision_reader
+from .session import DEFAULT_SESSION_FILE, parse_blinds, write_session_info
 from .table_state import is_plausible_table
 from .text_summary import format_summary
 
@@ -38,6 +39,10 @@ Layout = namedtuple("Layout",
 # that is what identifies the device; a frame from anything not listed here is
 # skipped rather than run against the nearest layout, since guessing would
 # produce a plausible-looking but wrong table.
+#
+# The iPad is the only supported device. The iPhone was here, reading with
+# geometry borrowed from the legacy fixed-region parser, but that geometry was
+# never validated against this path and misread hero cards -- see archive/.
 _LAYOUT_BY_SIZE = {
     seat_anchors.IPAD_PORTRAIT_SIZE: Layout(
         seat_anchors.IPAD_PORTRAIT,
@@ -45,16 +50,6 @@ _LAYOUT_BY_SIZE = {
         seat_anchors.IPAD_RANK_OFFSET,
         seat_anchors.IPAD_HERO_CARDS,
         seat_anchors.IPAD_HERO_CARD_SLOTS),
-    # The iPhone's board geometry already lives in regions.py, measured by
-    # hand for the fixed-region parser; reuse it rather than keeping a second
-    # copy that can drift. Its slots are at the reference resolution, which is
-    # this frame size exactly, so no rescaling is needed here.
-    seat_anchors.IPHONE_PORTRAIT_SIZE: Layout(
-        seat_anchors.IPHONE_PORTRAIT,
-        list(regions.BOARD_SLOTS),
-        regions.RANK_OFFSET,
-        list(regions.HERO_CARDS),
-        list(regions.HERO_CARDS)),
 }
 
 
@@ -259,7 +254,6 @@ def record_blinds(blinds, path=None):
     Kept so a later decision component can read the stakes without re-parsing
     a command line -- the capture path changed, that contract did not.
     """
-    from .server import DEFAULT_SESSION_FILE, parse_blinds, write_session_info
     try:
         small, big = parse_blinds(blinds)
     except ValueError as exc:
