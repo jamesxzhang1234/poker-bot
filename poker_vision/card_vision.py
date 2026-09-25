@@ -12,15 +12,20 @@ from .ocr_utils import _cascade, _ocr
 _RANK_WHITELIST = "23456789TJQKA"
 
 
+# Spades render on a dark navy background, not truly black. The test is on
+# the BRIGHTEST channel rather than the sum of all three, because the sum
+# leaves almost no margin: sampled across 163 real card backgrounds on both
+# devices, spades reach a sum of 107 while the old cutoff sat at 110. The same
+# iPad spade measured 107 in one frame and 116 in the next and so read "4s"
+# then "4d". By brightest channel the classes are far apart -- spades top out
+# at 55 and the dimmest non-spade (a club) starts at 110 -- so this threshold
+# sits in a wide empty gap instead of on top of the data.
+_SPADE_MAX_CHANNEL = 80
+
+
 def classify_suit(bgr_mean):
     b, g, r = bgr_mean
-    brightness = b + g + r
-    # Spades render on a dark navy background, not truly black -- measured
-    # ~46-96 brightness on real cards (confirmed: a threshold of 60 let
-    # several through as false diamonds, since navy's blue channel still
-    # edges out red/green once you're past pure black). Real diamond/club/
-    # heart backgrounds measured well clear of this, starting at ~125.
-    if brightness < 110:
+    if max(b, g, r) < _SPADE_MAX_CHANNEL:
         return "s"
     if g >= b and g >= r:
         return "c"  # clubs: green

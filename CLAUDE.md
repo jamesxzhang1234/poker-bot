@@ -189,13 +189,15 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   `board_reader.card_present` uses brightness instead: felt tops out around
   gray 92, a card face is far brighter.
 
-- **`classify_suit`'s spade threshold is marginal on the iPad.** It calls
-  anything below brightness 110 a spade, calibrated on iPhone spades at
-  46-96. The *same* iPad spade measured 107 in one frame and 116 in the next,
-  so it read `4s` then `4d`. Not changed here: the constant is shared with the
-  working iPhone path, and a calibration change needs the full before/after
-  sweep. A max-channel test would likely separate navy from bright blue more
-  robustly than the sum does.
+- **`classify_suit` tests the brightest channel, not the sum of all three.**
+  The sum left no margin: across 163 real card backgrounds on both devices
+  spades reach a sum of 107 against the old cutoff of 110, so the *same* iPad
+  spade measured 107 in one frame and 116 in the next and read `4s` then
+  `4d`. By brightest channel the classes are far apart -- spades top out at 55
+  and the dimmest non-spade (a club) starts at 110 -- so the threshold sits in
+  an empty gap instead of on top of the data. Before/after sweep: 163
+  backgrounds, 8 changed, all `d`->`s`, all the same navy card across
+  consecutive frames of one hand, zero changes on the iPhone.
 
 - **Vision never returns a bare "D".** A single character is too isolated for
   its text detector, so only "SB" and "BB" arrive. That is enough: one badge
