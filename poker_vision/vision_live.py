@@ -24,6 +24,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from collections import namedtuple
@@ -345,9 +346,47 @@ def newest_first(stream, on_drop=None):
         yield line
 
 
+# How long the display may go without a frame before it says so. The helper
+# emits only on a screen change, and a table can sit still between hands, so
+# this has to be longer than a quiet table's gaps -- but short enough to
+# notice before the next decision. The helper's own starvation warning fires
+# at 5s; this is deliberately a shade under, so the display admits it is
+# holding before the helper has worked out why.
+STALE_AFTER = 4.0
+
+
+class StaleWatch:
+    """Whether the display is showing a frame old enough to disown.
+
+    run_dashboard redraws only when a frame arrives, so when the helper goes
+    quiet -- the iPad sleeps, the capture session dies, the cable moves --
+    the loop blocks and the terminal keeps showing the last frame it ever
+    got. Seen live: the board and hole cards of a hand that had finished
+    minutes earlier, with nothing to say so.
+
+    A stale table that looks live is the worst thing this display can do. It
+    is worse than a blank one, and much worse than an error, because every
+    value on it is individually plausible.
+    """
+
+    def __init__(self, stale_after=STALE_AFTER, now=time.monotonic):
+        self._stale_after = stale_after
+        self._now = now
+        self._last = now()
+        self.ever_arrived = False
+
+    def note_arrival(self):
+        self._last = self._now()
+        self.ever_arrived = True
+
+    def overdue(self):
+        return self._now() - self._last > self._stale_after
+
+
 def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
                   on_state=None, status_of=None, hero_tracker=None,
-                  position_tracker=None):
+                  position_tracker=None, stale_after=STALE_AFTER,
+                  stale_poll=1.0):
     """Render each frame in place. Returns how many frames were drawn.
 
     Nothing in here is allowed to end the session. A bad line on stdout, a
@@ -360,35 +399,68 @@ def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
         hero_tracker = hero_cards.HeroCardTracker()
     if position_tracker is None:
         position_tracker = position_tracking.PositionTracker()
-    for state in iter_states(lines, on_error=lambda m: None,
-                             hero_tracker=hero_tracker,
-                             position_tracker=position_tracker):
-        # Tabbing away from the app, or a full-screen modal, yields a frame
-        # with no table in it. Hold the last real one rather than blanking the
-        # display -- but redraw it marked HELD, so a stale table is never
-        # mistaken for a live one.
-        if not state.seats:
-            if previous is not None:
-                # A fault the helper has reported outranks this. Locking the
-                # iPad shows the lock screen for one frame and then goes
-                # silent, and "no table on screen" would otherwise bury
-                # "unlock the iPad screen" for the rest of the lock.
+
+    watch = StaleWatch(stale_after=stale_after)
+    lock = threading.Lock()
+    finished = threading.Event()
+
+    def mark_stale_while_quiet():
+        # The only part of the display not driven by an arriving frame. It
+        # exists because "no frame arrived" cannot be noticed by a loop that
+        # only runs when one does.
+        while not finished.wait(stale_poll):
+            if not watch.ever_arrived or not watch.overdue():
+                continue
+            with lock:
+                if previous is None:
+                    continue
                 reported = status_of() if status_of else None
                 try:
-                    draw(dashboard.render(previous, frames=drawn,
-                                          status=reported or "no table on screen"))
+                    draw(dashboard.render(
+                        previous, frames=drawn,
+                        status=reported or "no frames arriving -- "
+                                           "is the iPad awake and unlocked?"))
                 except Exception:
                     pass
-            continue
-        try:
-            draw(dashboard.render(state, previous=previous, frames=drawn + 1))
-        except Exception:
-            # A rendering fault must not take the capture down with it.
-            continue
-        previous = state
-        drawn += 1
-        if on_state:
-            on_state(state)
+
+    threading.Thread(target=mark_stale_while_quiet, daemon=True).start()
+    try:
+        for state in iter_states(lines, on_error=lambda m: None,
+                                 hero_tracker=hero_tracker,
+                                 position_tracker=position_tracker):
+            watch.note_arrival()
+            # Tabbing away from the app, or a full-screen modal, yields a
+            # frame with no table in it. Hold the last real one rather than
+            # blanking the display -- but redraw it marked HELD, so a stale
+            # table is never mistaken for a live one.
+            if not state.seats:
+                if previous is not None:
+                    # A fault the helper has reported outranks this. Locking
+                    # the iPad shows the lock screen for one frame and then
+                    # goes silent, and "no table on screen" would otherwise
+                    # bury "unlock the iPad screen" for the rest of the lock.
+                    reported = status_of() if status_of else None
+                    with lock:
+                        try:
+                            draw(dashboard.render(
+                                previous, frames=drawn,
+                                status=reported or "no table on screen"))
+                        except Exception:
+                            pass
+                continue
+            with lock:
+                try:
+                    draw(dashboard.render(state, previous=previous,
+                                          frames=drawn + 1))
+                except Exception:
+                    # A rendering fault must not take the capture down.
+                    continue
+                previous = state
+                drawn += 1
+            if on_state:
+                on_state(state)
+    finally:
+        finished.set()
     return drawn
 
 

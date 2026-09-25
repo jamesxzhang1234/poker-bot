@@ -334,3 +334,77 @@ def test_every_frame_is_delivered_when_they_arrive_one_at_a_time():
             yield item
 
     assert list(vision_live.newest_first(stream())) == ["line0", "line1", "line2"]
+
+
+def test_a_display_goes_stale_when_frames_stop_arriving():
+    # The failure this exists for: the helper goes quiet -- the iPad sleeps,
+    # or the capture session dies -- and run_dashboard's loop simply blocks.
+    # The terminal keeps showing the last frame it ever got, with the board
+    # and hole cards of a hand that finished minutes ago, and nothing marks
+    # it stale. Seen live: "hero hand is stuck at previous hero hand".
+    clock = [100.0]
+    watch = vision_live.StaleWatch(stale_after=4.0, now=lambda: clock[0])
+
+    watch.note_arrival()
+    clock[0] += 1.0
+    assert watch.overdue() is False
+
+    clock[0] += 4.0
+    assert watch.overdue() is True
+
+
+def test_a_resumed_stream_is_not_stale():
+    clock = [100.0]
+    watch = vision_live.StaleWatch(stale_after=4.0, now=lambda: clock[0])
+    watch.note_arrival()
+    clock[0] += 10.0
+    assert watch.overdue() is True
+
+    watch.note_arrival()
+
+    assert watch.overdue() is False
+
+
+def test_a_display_with_nothing_on_it_yet_is_not_called_stale():
+    # Before the first frame there is nothing to mark stale -- the waiting
+    # screen already says what is happening.
+    clock = [100.0]
+    watch = vision_live.StaleWatch(stale_after=4.0, now=lambda: clock[0])
+    clock[0] += 10.0
+
+    assert watch.overdue() is True
+    assert watch.ever_arrived is False
+
+
+def test_the_held_display_is_redrawn_when_the_stream_goes_quiet():
+    # The unit tests above cover the decision; this covers the thread that
+    # acts on it, which is the part that was missing when a live session sat
+    # for minutes showing a finished hand.
+    import time as _time
+
+    def one_frame_then_silence():
+        yield _payload(index=0)
+        _time.sleep(0.5)
+
+    shown = []
+    vision_live.run_dashboard(one_frame_then_silence(), draw=shown.append,
+                              stale_after=0.05, stale_poll=0.02)
+
+    assert any("HELD" in s for s in shown), "the stall was never marked"
+    assert any("iPad awake and unlocked" in s for s in shown)
+    assert "HELD" not in shown[0], "the first live frame must not be marked"
+
+
+def test_a_reported_fault_is_preferred_when_the_stream_goes_quiet():
+    import time as _time
+
+    def one_frame_then_silence():
+        yield _payload(index=0)
+        _time.sleep(0.5)
+
+    shown = []
+    vision_live.run_dashboard(one_frame_then_silence(), draw=shown.append,
+                              status_of=lambda: "no frames arriving -- unlock the iPad screen",
+                              stale_after=0.05, stale_poll=0.02)
+
+    assert any("unlock the iPad screen" in s for s in shown)
