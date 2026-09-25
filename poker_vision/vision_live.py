@@ -4,11 +4,14 @@ Spawns tools/ipad_capture/capture, reads its JSON lines, and prints a parsed
 summary per frame -- the same output the push-based server produces, from a
 different source.
 
-There is deliberately no work queue here. The helper spends ~90ms per frame in
-Vision while this side spends ~0.15ms turning the payload into a TableState,
-so the consumer cannot fall behind the producer and the pipe is buffer enough.
-Frames are dropped where dropping belongs: in the helper, which sets
-alwaysDiscardsLateVideoFrames and skips frames whose content hasn't changed.
+There is deliberately no work queue here, though not for the reason first
+given. This side is now the slower half -- 53ms a frame on a quiet table and
+216ms on a busy one, against the helper's ~90ms -- so a queue would build a
+backlog without bound and the display would drift behind the game.
+newest_first drains whatever piled up and renders only the latest, which
+bounds the lag at one parse whatever the capture rate. Frames are also dropped
+in the helper, which sets alwaysDiscardsLateVideoFrames and skips frames whose
+content hasn't changed.
 
 Usage:
     python -m poker_vision.vision_live
