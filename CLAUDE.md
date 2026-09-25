@@ -16,9 +16,23 @@ skipped rather than read with geometry that was never validated for it.
 
 Two deliberate scope constraints that shape the code — don't "fix" them:
 
-- **Single-frame only.** No cross-frame/session memory. Players can leave
-  mid-hand, so anything that remembers state across screenshots was judged
-  more harmful than helpful. `infer_positions` works within one frame.
+- **Single-frame only, with two named exceptions.** No cross-frame/session
+  memory by default: players can leave mid-hand, so anything that remembers
+  state across screenshots was judged more harmful than helpful.
+  `infer_positions` works within one frame.
+
+  The exceptions are `HeroCardTracker` and `PositionTracker`, and they are
+  allowed for the same reason: both re-present a value that was *read* earlier
+  in the same hand rather than inferring table state, both discard it at the
+  next deal, and both prefer reporting nothing to reporting something stale.
+  Anything that would hold a value across a hand boundary, or derive a new
+  fact from remembered ones, does not qualify. They key on the same deal
+  signal (the hero-card-region signature) because hole cards and positions
+  turn over on exactly the same event.
+
+  The pressure to add these comes from the client, not from convenience: it
+  draws the hole cards fanned and the blind badges only pre-flop, so a
+  strictly per-frame reader is blind to facts that are still true.
 - **Capture: native iPad only. The push pipeline is archived.**
   An iOS Shortcuts automation POSTs every screenshot to a local Flask server;
   that is what `server.py` implements and it is still the only working path.
@@ -128,7 +142,8 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
 | `rank_templates.py` | Card ranks by template matching against stored exemplars (`data/rank_templates.npz`). Several exemplars per rank, because one set does **not** serve both devices. | board_reader |
 | `board_reader.py` | Reads the community board: rank from `rank_templates`, suit from `card_vision.classify_suit`. Has its own brightness-based card-presence test. | vision_reader |
 | `rank_templates.py` (see above) and the text mask together mean **three** readers share the frame: Vision for free-form text, template matching for card ranks, Tesseract for short stacks. Each is used where the others measurably fail. | | |
-| `hero_cards.py` | `HeroCardTracker` — reads the hero's hole cards once a hand at preflop and holds them. The only cross-frame memory in the pipeline; it reasons solely about whether a read is still valid, and blanks rather than risk showing a stale hand. | vision_live |
+| `hero_cards.py` | `HeroCardTracker` — reads the hero's hole cards once a hand at preflop and holds them. Reasons solely about whether a read is still valid, and blanks rather than risk showing a stale hand. | vision_live |
+| `position_tracker.py` | `PositionTracker` — holds the positions `infer_positions` worked out while the blind badges were up, and drops them at the next deal. The badges are a pre-flop affordance (93/143 pre-flop frames carry one against 19/98 post-flop) and the dealer button is a graphic Vision never reads, so without this 53% of frames had no position at all. One of the two sanctioned pieces of cross-frame memory. | vision_live |
 | `dashboard.py` | Renders a `TableState` as a fixed block rewritten in place, `*` marking what moved and `[HELD]` marking a stale one. Pure: state in, string out. Holds the previous state **for display only** — that memory never reaches the parser. | vision_live |
 | `vision_live.py` | Live runner: spawns the capture helper, turns its JSON lines into `TableState`, prints `format_summary`. Picks the anchor set from the frame size and skips a size it doesn't know rather than guessing. **No work queue on purpose** — the helper spends ~90ms/frame and this side ~0.15ms, so the consumer cannot fall behind; frames are dropped in the helper, where the diff gate lives. | — |
 | `tools/ipad_capture/capture.swift` | Swift helper: sets the CoreMediaIO flag, opens the USB iOS device, runs one `VNRecognizeTextRequest` per frame, emits JSON lines. `--dir` replays saved frames, `--live` captures. | — |
