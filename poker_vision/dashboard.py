@@ -95,7 +95,15 @@ def render(state, previous=None, frames=None, latency_ms=None, status=None):
         header = f"  [HELD] {status}\n" + header
     lines = [header]
     if state.your_turn:
-        owed = "" if state.to_call is None else f"   to call {state.to_call:g}"
+        # 0 and None mean different things here (see find_action): nothing
+        # to call, versus a price that could not be read. "to call 0" states
+        # the first accurately and unhelpfully.
+        if state.to_call is None:
+            owed = ""
+        elif state.to_call == 0:
+            owed = "   check is free"
+        else:
+            owed = f"   to call {state.to_call:g}"
         lines.append(f"  >>> YOUR TURN{owed}")
     lines += [f"  {live} in hand", "  " + "-" * _WIDTH]
 

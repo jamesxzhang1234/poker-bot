@@ -240,3 +240,30 @@ def test_the_count_of_players_still_in_the_hand_is_shown():
              Seat(seat_id="c", name="z", stack=1.0, position="BB", in_hand=False)]
 
     assert "2 in hand" in render(_state(seats))
+
+
+def test_a_free_check_reads_as_free_not_as_a_call_of_zero():
+    # to_call is 0 when checking costs nothing, which "to call 0" states
+    # accurately and unhelpfully -- the point of the line is to tell you at a
+    # glance what the decision is.
+    seats = [Seat(seat_id="hero", name="jxz", stack=9.9, position="SB", is_hero=True)]
+    state = _state(seats, pot=1.7)
+    state.your_turn = True
+    state.to_call = 0.0
+
+    out = render(state)
+
+    assert "check is free" in out
+    assert "to call 0" not in out
+
+
+def test_a_price_that_could_not_be_read_says_nothing_about_it():
+    seats = [Seat(seat_id="hero", name="jxz", stack=9.9, position="SB", is_hero=True)]
+    state = _state(seats, pot=1.7)
+    state.your_turn = True
+
+    out = render(state)
+
+    assert "YOUR TURN" in out
+    assert "check is free" not in out
+    assert "to call" not in out
