@@ -83,8 +83,17 @@ def read_card(card_crop, rank_offset):
     return f"{rank}{suit}"
 
 
+# A board is dealt 0, then 3, then 4, then 5. One or two cards is not a state
+# the game can be in, so a read of that length is a misread rather than a
+# partial truth. Mid-deal the flop slides in and the cards sit briefly offset
+# from their slots; a real frame read "7c Qh" that way, two cards with one of
+# them wrong. Rejecting by length needs no confidence threshold, which would
+# have had to sit at 0.10 margin to catch it and would risk good reads.
+_POSSIBLE_BOARD_SIZES = (0, 3, 4, 5)
+
+
 def read_board(frame, slots, rank_offset):
-    """The community cards, left to right.
+    """The community cards, left to right, or [] if the read is not a board.
 
     Stops at the first slot without a card: the board is dealt left to right,
     so a gap means the rest are undealt rather than unreadable.
@@ -100,4 +109,4 @@ def read_board(frame, slots, rank_offset):
         if card is None:
             break
         board.append(card)
-    return board
+    return board if len(board) in _POSSIBLE_BOARD_SIZES else []

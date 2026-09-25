@@ -247,6 +247,18 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   effectively free. Don't swap it for a faster one without first changing
   what makes this cheap.
 
+- **A board is 0, 3, 4 or 5 cards. One or two is a misread, not a partial
+  truth.** Mid-deal the flop slides in and the cards sit briefly offset from
+  their slots; a real frame read "7c Qh" that way, two cards with one of them
+  wrong. Rejecting by length costs nothing and needs no threshold -- the
+  alternative was a confidence margin, which would have had to sit at 0.10 to
+  catch it while a correct read scored 0.13, far too thin to trust.
+
+- **Status labels arrive clipped, so match their start, not the whole
+  phrase.** Vision returned `'Sitting (100'` -- a "Sitting Out (100 bb)" label
+  cut short -- which matched nothing in the not-a-handle set and became a
+  phantom player at the table.
+
 - **At showdown the client dims the cards not in the winning hand, and one
   brightness cutoff cannot read both states.** A dimmed card's ink falls below
   any threshold that suits a normal one -- a real five-card board came back as

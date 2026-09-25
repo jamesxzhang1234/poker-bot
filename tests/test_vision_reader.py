@@ -429,7 +429,9 @@ def test_table_state_reads_the_board_from_the_attached_strip():
     # sends.
     frame = np.full((2360, 1640, 3), 30, dtype=np.uint8)
     templates = rank_templates.load()
-    for i, (rank, bgr) in enumerate([("Q", (160, 60, 40)), ("7", (40, 40, 160))]):
+    # three cards, not two: a board is only ever 0, 3, 4 or 5 long
+    for i, (rank, bgr) in enumerate([("Q", (160, 60, 40)), ("7", (40, 40, 160)),
+                                     ("9", (50, 150, 50))]):
         x1, y1, x2, y2 = seat_anchors.IPAD_BOARD_SLOTS[i]
         frame[y1:y2, x1:x2] = bgr
         cv2.circle(frame, ((x1 + x2) // 2, y1 + 110), 30, (255, 255, 255), -1)
@@ -455,7 +457,7 @@ def test_table_state_reads_the_board_from_the_attached_strip():
         board_slots=seat_anchors.IPAD_BOARD_SLOTS,
         rank_offset=seat_anchors.IPAD_RANK_OFFSET)
 
-    assert state.board_cards == ["Qd", "7h"]
+    assert state.board_cards == ["Qd", "7h", "9c"]
 
 
 def test_board_is_empty_when_the_helper_sent_no_strip():
@@ -1042,3 +1044,18 @@ def test_in_hand_comes_from_the_cards_beside_a_seat_when_available():
 
     seat = [s for s in state.seats if s.seat_id == "top_left"][0]
     assert seat.in_hand is True
+
+
+def test_a_truncated_status_label_is_not_a_player():
+    # Vision returned 'Sitting (100' on a real frame -- a "Sitting Out" label
+    # cut short -- and it became a phantom player at the table. Matching the
+    # full phrase is not enough when the phrase can arrive clipped.
+    for text in ["Sitting (100", "Sitting Out (100 bb)", "sitting out", "Waiting for BB"]:
+        obs = [_obs(text, 404, 895), _obs("9.45", 404, 951)]
+        assert vision_reader.find_seat_plates(obs, 1640, 2360) == [], text
+
+
+def test_a_handle_that_merely_starts_with_a_letter_is_kept():
+    obs = [_obs("Sitty", 404, 895), _obs("9.45", 404, 951)]
+
+    assert len(vision_reader.find_seat_plates(obs, 1640, 2360)) == 1

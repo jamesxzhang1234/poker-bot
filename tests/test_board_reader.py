@@ -46,10 +46,12 @@ def _frame(cards):
     return frame
 
 
-def test_reads_a_single_board_card():
-    frame = _frame(["Qd"])
+def test_reads_a_flop():
+    # The smallest real board is three cards. This used to assert that a
+    # single card read back, which is not a state the game can be in.
+    frame = _frame(["Qd", "5s", "8h"])
 
-    assert board_reader.read_board(frame, SLOTS, RANK_OFFSET) == ["Qd"]
+    assert board_reader.read_board(frame, SLOTS, RANK_OFFSET) == ["Qd", "5s", "8h"]
 
 
 def test_reads_a_full_five_card_board():
@@ -111,3 +113,23 @@ def test_a_dimmed_card_is_still_read():
 
     assert len(board) == 3, board          # the dimmed card must not truncate it
     assert board[0][0] == "7" and board[1][0] == "T" and board[2][0] == "6"
+
+
+def test_an_impossible_board_length_is_rejected():
+    # A board goes 0, 3, 4, 5 -- never 1 or 2. Mid-deal the flop slides in and
+    # the cards are briefly offset from their slots, so a real frame read
+    # "7c Qh": two cards, one of them wrong. Length alone rules that out
+    # without needing a confidence threshold that would risk good reads.
+    frame = _frame(["5s", "8h"])
+
+    assert board_reader.read_board(frame, SLOTS, RANK_OFFSET) == []
+
+
+def test_a_flop_is_kept():
+    cards = ["5s", "8h", "Qd"]
+
+    assert board_reader.read_board(_frame(cards), SLOTS, RANK_OFFSET) == cards
+
+
+def test_a_single_card_is_rejected_too():
+    assert board_reader.read_board(_frame(["5s"]), SLOTS, RANK_OFFSET) == []

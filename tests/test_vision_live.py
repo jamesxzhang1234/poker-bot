@@ -97,7 +97,9 @@ def test_states_carry_the_board_when_the_payload_has_a_strip():
     templates = rank_templates.load()
     # BGR, matching what card_vision.classify_suit documents from real cards:
     # diamonds are blue-dominant, clubs green-dominant.
-    for i, (rank, bgr) in enumerate([("K", (160, 60, 40)), ("9", (50, 150, 50))]):
+    # three cards, not two: a board is only ever 0, 3, 4 or 5 long
+    for i, (rank, bgr) in enumerate([("K", (160, 60, 40)), ("9", (50, 150, 50)),
+                                     ("4", (40, 40, 160))]):
         x1, y1, x2, y2 = seat_anchors.IPAD_BOARD_SLOTS[i]
         frame[y1:y2, x1:x2] = bgr
         cv2.circle(frame, ((x1 + x2) // 2, y1 + 110), 30, (255, 255, 255), -1)
@@ -119,7 +121,7 @@ def test_states_carry_the_board_when_the_payload_has_a_strip():
 
     state = list(vision_live.iter_states([payload]))[0]
 
-    assert state.board_cards == ["Kd", "9c"]
+    assert state.board_cards == ["Kd", "9c", "4h"]
 
 
 def test_warns_about_a_plate_that_matches_no_seat():

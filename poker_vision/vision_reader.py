@@ -185,11 +185,19 @@ _NOT_A_HANDLE = {
     "sitting out", "waiting", "dealer",
 }
 
+# Labels that arrive clipped. Vision returned 'Sitting (100' on a real frame
+# -- a "Sitting Out (100 bb)" label cut short -- which matched nothing in the
+# set above and became a phantom player at the table. Matching the start of
+# the string catches it however the tail is mangled.
+_NOT_A_HANDLE_PREFIX = ("sitting ", "waiting ", "show ", "total ")
+
 
 def _is_handle(text):
     """Whether a recognised string could be a player's handle."""
     cleaned = text.strip().lower()
     if not cleaned or cleaned in _NOT_A_HANDLE:
+        return False
+    if cleaned.startswith(_NOT_A_HANDLE_PREFIX):
         return False
     # Raise presets ("2x"), the battery ("100%"), the turn timer ("+30s").
     if re.match(r"^[+-]?\d+(\.\d+)?\s*(x|%|s)$", cleaned):
