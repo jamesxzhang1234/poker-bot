@@ -239,6 +239,30 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   effectively free. Don't swap it for a faster one without first changing
   what makes this cheap.
 
+- **Backtest with invariants, not just labelled frames.** Card reading was
+  validated against ~10 hand-labelled frames and looked finished at 20/20.
+  Running all 101 frames and checking rules that hold *without* labels found
+  6 real errors immediately: **a card cannot be in the board and a hand at
+  once**. The useful invariants are that one, no duplicate seat ids, at most
+  one hero, at most five board cards and two hole cards, ranks and suits in
+  range, and stacks non-negative. Ground truth on a few frames and invariants
+  on all of them catch different things.
+
+- **The board slots are wider than the cards, so a corner colour sample can
+  land on felt.** The rightmost slot overhangs its card, and
+  `_sample_bg_color` reads the top-right corner -- which for that slot is blue
+  table, so the ace of spades read as a diamond. `sample_card_color` takes the
+  median of the face instead, ignoring a minority of felt for the same reason
+  it ignores the white pips. The legacy `parse_card` keeps the corner sample;
+  only the Vision path's board_reader changed.
+
+- **When hole cards clash with the board, report neither.** One of the two
+  reads is wrong and nothing can tell which, so showing the pair presents an
+  impossible hand as fact. Note the iPhone hero slots in `regions.HERO_CARDS`
+  were calibrated for the legacy parser and are **not validated for the Vision
+  path** -- they misread the first card on real frames, which is what this
+  check now catches. Calibrate them before trusting hero cards on iPhone.
+
 - **Cut the rank glyph out before reading it; don't hand OCR a window.** The
   suit pips are several times larger than the rank, so a window of the card's
   top gives Tesseract the glyph, the pips and a lot of empty felt, and it

@@ -52,7 +52,7 @@ def read_card(card_crop, rank_offset):
     rank = rank_templates.match(rank_glyph(card_crop, rank_offset))
     if rank is None:
         return None
-    suit = card_vision.classify_suit(card_vision._sample_bg_color(card_crop))
+    suit = card_vision.classify_suit(card_vision.sample_card_color(card_crop))
     return f"{rank}{suit}"
 
 

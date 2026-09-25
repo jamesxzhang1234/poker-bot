@@ -122,3 +122,33 @@ def test_works_without_a_signature_by_falling_back_to_the_board():
     tracker = HeroCardTracker()
 
     assert tracker.update([], read, None) == ["Ad", "Kd"]
+
+
+def test_hole_cards_that_clash_with_the_board_are_dropped():
+    # A card cannot be in the board and your hand at once. When both readers
+    # claim it, one is wrong and there is no way to tell which -- showing the
+    # pair anyway presents an impossible hand as fact. Found by backtesting:
+    # the board's ace of spades read as a diamond and collided with the hero's
+    # real ace of diamonds.
+    read = _reader(["Ad", "Kd"])
+    tracker = HeroCardTracker()
+    tracker.update([], read, SAME)
+
+    assert tracker.update(["5s", "8h", "Qd", "4s", "Ad"], read, SAME) == []
+
+
+def test_hole_cards_are_kept_when_the_board_does_not_clash():
+    read = _reader(["Ad", "Kd"])
+    tracker = HeroCardTracker()
+    tracker.update([], read, SAME)
+
+    assert tracker.update(["5s", "8h", "Qd"], read, SAME) == ["Ad", "Kd"]
+
+
+def test_a_clash_appearing_later_still_drops_them():
+    read = _reader(["Ad", "Kd"])
+    tracker = HeroCardTracker()
+    tracker.update([], read, SAME)
+    tracker.update(["5s", "8h", "Qd"], read, SAME)
+
+    assert tracker.update(["5s", "8h", "Qd", "Ad"], read, SAME) == []

@@ -61,6 +61,24 @@ def classify_hero_suit(bgr_mean):
     return "d" if b >= _HERO_DIAMOND_BLUE_RATIO * max(r, 1.0) else "s"
 
 
+def sample_card_color(card_crop):
+    """Median colour of a card's face, ignoring its white ink.
+
+    Used for board cards in place of the corner patch. The slots are wider
+    than the cards, so the rightmost one overhangs onto the blue table and a
+    corner sample measures felt -- on a real frame that read the ace of spades
+    as a diamond, which the backtest caught as the same card appearing in both
+    the board and the hero's hand. A median ignores a minority of felt for the
+    same reason it ignores the pips: neither is most of the crop.
+    """
+    pixels = card_crop.reshape(-1, 3)
+    ink = (pixels[:, 0] > 150) & (pixels[:, 1] > 150) & (pixels[:, 2] > 150)
+    face = pixels[~ink]
+    if len(face) < 20:
+        face = pixels
+    return np.median(face, axis=0)
+
+
 def _sample_bg_color(card_crop):
     h, w = card_crop.shape[:2]
     patch = card_crop[int(h * 0.06):int(h * 0.16), w - int(w * 0.16):w - int(w * 0.06)]

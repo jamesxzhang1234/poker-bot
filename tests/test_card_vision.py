@@ -140,3 +140,28 @@ def test_the_rank_is_found_on_a_dark_card_too():
     # Face colours run from navy through green to dimmed blue, so the glyph
     # cannot be located with one fixed brightness cutoff.
     assert card_vision.read_rank_from_top(_fanned_card("5", bgr=(54, 40, 37))) == "5"
+
+
+def test_a_card_slot_overhanging_onto_felt_still_reads_its_suit():
+    # The board slots are wider than the cards, so the rightmost slot can
+    # extend past its card onto the blue table. Sampling the top-right corner
+    # then measures felt, not card -- on a real frame that turned the ace of
+    # spades into a diamond. Taking the median of the card face ignores a
+    # minority of felt the same way it ignores the white pips.
+    import cv2
+    import numpy as np
+    card = np.zeros((154, 118, 3), dtype=np.uint8)
+    card[:, 0:100] = (45, 30, 25)          # navy card face
+    card[:, 100:] = (86, 42, 18)           # blue felt the slot overhangs onto
+    cv2.circle(card, (50, 100), 30, (255, 255, 255), -1)   # white pip
+
+    assert card_vision.classify_suit(card_vision.sample_card_color(card)) == "s"
+
+
+def test_white_ink_does_not_drag_the_sampled_colour():
+    import cv2
+    import numpy as np
+    card = np.full((154, 118, 3), (160, 60, 40), dtype=np.uint8)
+    cv2.circle(card, (59, 90), 45, (255, 255, 255), -1)
+
+    assert card_vision.classify_suit(card_vision.sample_card_color(card)) == "d"

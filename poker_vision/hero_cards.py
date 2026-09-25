@@ -72,4 +72,12 @@ class HeroCardTracker:
                 self.cards = list(found)
                 self.read_this_hand = True
 
+        # A card cannot be in the board and the hand at once. When both
+        # readers claim one, one of them is wrong and nothing here can tell
+        # which -- so report neither rather than present an impossible hand as
+        # fact. Found by backtesting: a board ace of spades read as a diamond
+        # and collided with the hero's real ace of diamonds.
+        if self.cards and set(self.cards) & set(board):
+            return []
+
         return self.cards
