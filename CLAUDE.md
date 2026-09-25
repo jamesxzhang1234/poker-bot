@@ -220,6 +220,25 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   is missed entirely, it shows **nothing** rather than the previous hand --
   blank is a failure you notice, wrong hole cards are not.
 
+- **Tesseract reads hero ranks best; Vision and templates were both tried.**
+  Measured on five hands read off the screenshots by eye, both cards each:
+
+  | method | hands correct | per read |
+  |---|---|---|
+  | Tesseract (`read_rank_from_top`) | **5/5** | ~114ms |
+  | Apple Vision on the hero strip | 1/5 | ~25ms |
+  | rotated template matching | 2/5 | ~8ms |
+
+  Vision found both ranks on one hand and nothing on two -- the same isolated
+  glyph weakness that costs it board ranks, and the fan makes it worse.
+  Template matching is fastest but scored 0.41-0.47 on its failures, meaning
+  the glyph localiser grabs the wrong blob on a rotated card; deskewing the
+  card first might fix it, but the speed it buys is not worth having. **The
+  read happens once a hand, not once a frame** -- 4 reads across 30 frames,
+  ~15ms per frame amortised -- so the slowest and most accurate option is
+  effectively free. Don't swap it for a faster one without first changing
+  what makes this cheap.
+
 - **A fanned card's suit comes from its left edge, not its centre.** The two
   hero cards overlap, so the one behind has its middle covered by the one in
   front and a centre sample averages the two: it called a 9 of spades a
