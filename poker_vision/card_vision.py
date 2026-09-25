@@ -186,6 +186,52 @@ def _read_ten(card_crop, fraction=0.62):
     return looks_like_ten(_ocr(upscaled, psm=10))
 
 
+def isolate_rank_glyph(card_crop):
+    """A tight binary crop of just the rank glyph, or None.
+
+    Handing OCR a window of the card's top gives it the rank, the suit pips
+    and a lot of empty felt -- and the pips are several times larger than the
+    glyph, so they dominate. On a real frame a 5 came back as a 3 that way.
+    Cutting the glyph out first removes everything it was getting confused by.
+
+    The brightness cutoff is derived from the crop rather than fixed, because
+    a card face runs from navy through green to dimmed blue and a single
+    threshold finds the glyph on some and nothing on others.
+    """
+    h, w = card_crop.shape[:2]
+    top = card_crop[0:int(h * 0.55), 0:int(w * 0.70)]
+    if top.size == 0:
+        return None
+    gray = cv2.cvtColor(top, cv2.COLOR_BGR2GRAY)
+    threshold = max(gray.mean() + 1.6 * gray.std(), 60)
+    mask = (gray > threshold).astype(np.uint8)
+    count, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+
+    best = None
+    for i in range(1, count):
+        x, y = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP]
+        bw, bh = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
+        area = stats[i, cv2.CC_STAT_AREA]
+        if not (top.shape[0] * 0.20 <= bh <= top.shape[0] * 0.85):
+            continue
+        if bw < 5 or area < 60 or area < 0.12 * bw * bh:
+            continue
+        # The rank sits above and left of everything else on the card.
+        rank_of = y + x * 0.5
+        if best is None or rank_of < best[0]:
+            best = (rank_of, mask[y:y + bh, x:x + bw] * 255)
+    return None if best is None else best[1]
+
+
+def _read_isolated(glyph):
+    upscaled = cv2.resize(cv2.bitwise_not(glyph), None, fx=4, fy=4,
+                          interpolation=cv2.INTER_CUBIC)
+    upscaled = cv2.copyMakeBorder(upscaled, 20, 20, 20, 20,
+                                  cv2.BORDER_CONSTANT, value=255)
+    return _cascade((10, 7, 8), lambda psm: _extract_rank(
+        _ocr(upscaled, whitelist=_RANK_WHITELIST, psm=psm)))
+
+
 def read_rank_from_top(card_crop, top_fractions=(0.4, 0.45, 0.5, 0.55, 0.6, 0.65)):
     """Like read_rank, but for a card whose rank doesn't sit at a reliable
     fixed corner offset (a rotated/fanned card -- see HERO_CARDS): searches
@@ -207,6 +253,16 @@ def read_rank_from_top(card_crop, top_fractions=(0.4, 0.45, 0.5, 0.55, 0.6, 0.65
     # single letter before a larger window gets a chance.
     if _read_ten(card_crop):
         return "T"
+
+    # Cut the glyph out and read that alone -- see isolate_rank_glyph.
+    glyph = isolate_rank_glyph(card_crop)
+    if glyph is not None:
+        rank = _read_isolated(glyph)
+        if rank is not None:
+            return rank
+
+    # Isolation can come up empty on a card this has not seen; the original
+    # window cascade still stands behind it.
     h = card_crop.shape[0]
     for fraction in top_fractions:
         rank = _ocr_rank_bright(card_crop[0:int(h * fraction), :])

@@ -239,6 +239,18 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   effectively free. Don't swap it for a faster one without first changing
   what makes this cheap.
 
+- **Cut the rank glyph out before reading it; don't hand OCR a window.** The
+  suit pips are several times larger than the rank, so a window of the card's
+  top gives Tesseract the glyph, the pips and a lot of empty felt, and it
+  reads the pips as characters -- a 5 came back as a 3 because the window held
+  a diamond pip bigger than the digit. `isolate_rank_glyph` takes the
+  top-left-most glyph-sized component and reads that alone, which took hero
+  cards from 17/20 to **20/20**. Its brightness cutoff is derived from the
+  crop (`mean + 1.6*std`), not fixed: card faces run from navy through green
+  to dimmed blue, and one constant finds the glyph on some and nothing on
+  others. The window cascade is kept behind it as a fallback for cards
+  isolation cannot handle.
+
 - **A ten is invisible to a whitelisted read, and the cascade hides it.**
   The client draws a ten as the two characters "10", but `_RANK_WHITELIST`
   constrains Tesseract to single rank characters, so it can never report what

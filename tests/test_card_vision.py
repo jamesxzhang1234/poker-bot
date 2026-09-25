@@ -109,3 +109,34 @@ def test_a_two_character_read_ending_in_zero_is_a_ten():
 def test_other_rank_misreads_are_not_taken_for_a_ten():
     for text in ["eo,", "a,", "e)", "*)", "an", "+", "Fi", "Q", "", ":", "A", "0"]:
         assert card_vision.looks_like_ten(text) is False, text
+
+
+def _fanned_card(rank, bgr=(160, 60, 40)):
+    """A card whose suit pips dwarf its rank glyph, as the real ones do."""
+    import cv2
+    import numpy as np
+    from poker_vision import rank_templates
+    card = np.full((170, 115, 3), (12, 10, 10), dtype=np.uint8)
+    face = np.full((150, 100, 3), bgr, dtype=np.uint8)
+    glyph = cv2.resize(rank_templates.load()[rank][0], (24, 32),
+                       interpolation=cv2.INTER_NEAREST)
+    face[8:40, 6:30][glyph > 127] = (255, 255, 255)
+    cv2.circle(face, (26, 70), 18, (255, 255, 255), -1)
+    cv2.circle(face, (58, 110), 26, (255, 255, 255), -1)
+    card[8:158, 8:108] = face
+    return card
+
+
+def test_the_rank_is_read_past_much_larger_suit_pips():
+    # Handing Tesseract a window of the card's top gives it the rank plus the
+    # pips plus a lot of empty space, and it reads the pips as characters. On
+    # a real frame a 5 came back as a 3, because the window held a diamond pip
+    # far bigger than the glyph; this fixture reproduces that, reading 2.
+    for rank in ["5", "7", "9", "Q"]:
+        assert card_vision.read_rank_from_top(_fanned_card(rank)) == rank, rank
+
+
+def test_the_rank_is_found_on_a_dark_card_too():
+    # Face colours run from navy through green to dimmed blue, so the glyph
+    # cannot be located with one fixed brightness cutoff.
+    assert card_vision.read_rank_from_top(_fanned_card("5", bgr=(54, 40, 37))) == "5"
