@@ -1,4 +1,8 @@
-"""Seat anchor points per device layout, for the Vision capture path.
+"""Per-device layout constants for the Vision capture path.
+
+Holds the seat anchors used by vision_reader and the board geometry used by
+board_reader -- everything that differs between an iPhone frame and an iPad
+frame, in one place, so adding a device is a single edit here.
 
 An anchor is a single (x, y) point near where a seat's nameplate renders --
 not a box around a field. The Vision path locates text by recognition and then
@@ -55,3 +59,18 @@ IPHONE_PORTRAIT = {
 }
 
 IPHONE_PORTRAIT_SIZE = (1206, 2622)
+
+
+# Board geometry per device, for board_reader. The community cards are dealt
+# left to right into a fixed five-slot band -- they are NOT centred as the
+# count grows, which is what lets one set of slots serve every street.
+#
+# iPad slots derived from real frames: pitch 136px, width 118px, and the band
+# (495..1157) centres on 826 against the frame's own centre of 820.
+IPAD_BOARD_SLOTS = [(495 + i * 136, 985, 495 + i * 136 + 118, 1139) for i in range(5)]
+
+# Rank glyph in a card's top-left corner, relative to the slot's (x1, y1).
+# Taller than the iPhone's because the iPad renders the card larger; it stops
+# short of the suit pip, which would otherwise merge with the rank and give
+# the same rank several different templates.
+IPAD_RANK_OFFSET = (8, 4, 70, 48)

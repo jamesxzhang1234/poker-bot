@@ -116,6 +116,8 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
 | `main.py` | Offline CLI over image/video files. | — |
 | `vision_reader.py` | **The Vision path.** Turns the capture helper's JSON (recognised text + pixel positions) into a `TableState`: `parse_payload`, `parse_amount`, `find_seat_plates`, `find_pot`, `assign_to_seats`, `build_table_state`. Locates text by recognition, then assigns it to a seat by proximity — no per-field boxes. | — (server/main not yet wired) |
 | `seat_anchors.py` | One (x, y) anchor per seat, per device: `IPAD_PORTRAIT`, `IPHONE_PORTRAIT`. Derived by clustering real frames, not hand-measured. | vision_reader, vision_live |
+| `rank_templates.py` | Card ranks by template matching against stored exemplars (`data/rank_templates.npz`). Several exemplars per rank, because one set does **not** serve both devices. | board_reader |
+| `board_reader.py` | Reads the community board: rank from `rank_templates`, suit from `card_vision.classify_suit`. Has its own brightness-based card-presence test. | — (not yet wired into the live path) |
 | `vision_live.py` | Live runner: spawns the capture helper, turns its JSON lines into `TableState`, prints `format_summary`. Picks the anchor set from the frame size and skips a size it doesn't know rather than guessing. **No work queue on purpose** — the helper spends ~90ms/frame and this side ~0.15ms, so the consumer cannot fall behind; frames are dropped in the helper, where the diff gate lives. | — |
 | `tools/ipad_capture/capture.swift` | Swift helper: sets the CoreMediaIO flag, opens the USB iOS device, runs one `VNRecognizeTextRequest` per frame, emits JSON lines. `--dir` replays saved frames, `--live` captures. | — |
 | `overlay.py` | **Dead code.** Nothing imports it (leftover from the deleted cv2-window UI). Safe to delete. | — |
@@ -165,6 +167,35 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   out per call, and on a 10x10 blank image that round trip costs 49.9ms
   against ~6ms of actual recognition — 129 calls per frame meant ~6.4s of pure
   process overhead.
+
+- **Card ranks are template-matched, not OCR'd, and one template set does not
+  serve both devices.** The board is a closed 13-symbol alphabet in a fixed
+  font, which is what OCR handles worst: Vision reads 2/4 board ranks on a
+  whole frame and *1/4* on per-card crops (an isolated glyph in a small crop
+  often isn't detected as text at all), and `card_vision`'s Tesseract path
+  costs ~490ms a frame. Two traps found while building the templates:
+  the rank crop catches the top of the suit pip on some cards, and that
+  fragment stretches the bounding box so normalising squashes the digit -- a
+  clean "5" scored 0.60 as "9" and never ranked "5" at all; and normalising
+  does **not** make an exemplar device-independent, so an iPhone-built "8"
+  lost to "3" on a clean iPad 8 while an iPad-built "10" scored 0.21 against
+  iPhone tens. Hence several exemplars per rank. Validated 15/16 cards and
+  7/8 boards against hand-checked frames.
+
+- **`card_vision.is_card_present` false-positives on empty board slots.** It
+  keys on edge density; on IMG_8425 (pre-flop, no board at all) it reported
+  three cards, and `read_rank` then "read" a rank off dark felt -- which is
+  where the bogus 'T' samples in the first template harvest came from.
+  `board_reader.card_present` uses brightness instead: felt tops out around
+  gray 92, a card face is far brighter.
+
+- **`classify_suit`'s spade threshold is marginal on the iPad.** It calls
+  anything below brightness 110 a spade, calibrated on iPhone spades at
+  46-96. The *same* iPad spade measured 107 in one frame and 116 in the next,
+  so it read `4s` then `4d`. Not changed here: the constant is shared with the
+  working iPhone path, and a calibration change needs the full before/after
+  sweep. A max-channel test would likely separate navy from bright blue more
+  robustly than the sum does.
 
 - **A live stdout stream must be line-buffered.** `vision_live` reconfigures
   stdout on startup: Python block-buffers when stdout is a pipe or file, so
