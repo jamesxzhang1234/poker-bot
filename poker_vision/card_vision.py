@@ -293,6 +293,15 @@ def read_rank_from_top(card_crop, top_fractions=(0.4, 0.45, 0.5, 0.55, 0.6, 0.65
     # 0.85-0.99 with room to spare.
     glyph = isolate_rank_glyph(card_crop)
     if glyph is not None:
+        # A confident fanned-exemplar match beats OCR; below that bar OCR
+        # decides. Neither reads every hand alone -- the templates get an 8
+        # of spades that Tesseract calls a 3, Tesseract gets a K the
+        # templates call an A -- and their failures are separable because a
+        # template mistake scores low while its successes score near 1.
+        from . import rank_templates
+        matched, score = rank_templates.match_fanned(glyph)
+        if matched is not None and score >= rank_templates.FANNED_MIN_SCORE:
+            return matched
         rank = _read_isolated(glyph)
         if rank is not None:
             return rank

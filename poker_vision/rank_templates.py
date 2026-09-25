@@ -25,6 +25,18 @@ import numpy as np
 
 _TEMPLATE_FILE = Path(__file__).resolve().parent / "data" / "rank_templates.npz"
 
+# Exemplars harvested from the hero's own fanned cards during live play. Kept
+# apart from the flat set because the two orientations are genuinely different
+# shapes: flat exemplars score 0.62-0.66 on a fanned glyph, fanned ones reach
+# 0.90-1.00. Mixing them would drag both.
+_FANNED_FILE = Path(__file__).resolve().parent / "data" / "rank_templates_fanned.npz"
+
+# How well a fanned exemplar must match before it is trusted over OCR.
+# Measured across hands checked by eye: correct matches score 0.90-1.00 and
+# mistakes 0.40-0.53, so the bar sits in an empty band. Below it Tesseract
+# decides, and the two together read every one of those hands.
+FANNED_MIN_SCORE = 0.90
+
 TEMPLATE_SIZE = (24, 32)   # (width, height) every glyph is normalised to
 
 # Below this correlation the glyph is not any rank we know. An empty board slot
@@ -46,6 +58,7 @@ _MIN_INK_PIXELS = 20
 _FRAGMENT_FRACTION = 0.25
 
 _cache = None
+_fanned_cache = None
 
 
 def load():
@@ -116,3 +129,32 @@ def match(mask, min_score=MIN_SCORE):
     if not scores or scores[0][1] < min_score:
         return None
     return scores[0][0]
+
+
+def load_fanned():
+    """Fanned-orientation exemplars, for the hero's own cards."""
+    global _fanned_cache
+    if _fanned_cache is None:
+        grouped = {}
+        if _FANNED_FILE.exists():
+            with np.load(_FANNED_FILE) as data:
+                for key in data.files:
+                    grouped.setdefault(key.split("#", 1)[0], []).append(data[key])
+        _fanned_cache = grouped
+    return _fanned_cache
+
+
+def match_fanned(mask):
+    """Best (rank, score) against the fanned exemplars; (None, 0.0) if unusable."""
+    glyph = normalise(mask)
+    if glyph is None:
+        return None, 0.0
+    probe = glyph.astype(np.float32)
+    best, best_score = None, 0.0
+    for rank, exemplars in load_fanned().items():
+        for exemplar in exemplars:
+            score = float(cv2.matchTemplate(probe, exemplar.astype(np.float32),
+                                            cv2.TM_CCOEFF_NORMED)[0][0])
+            if score > best_score:
+                best, best_score = rank, score
+    return best, best_score

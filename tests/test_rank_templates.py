@@ -78,3 +78,22 @@ def test_both_characters_of_a_ten_are_kept():
     canvas[4:36, 4:28] = templates["T"][0]
 
     assert rank_templates.match(canvas) == "T"
+
+
+def test_the_fanned_set_is_separate_from_the_flat_one():
+    # Hero cards are fanned and overlapping; board cards are flat. Exemplars
+    # harvested from one would drag on the other, so they are kept apart.
+    flat = rank_templates.load()
+    fanned = rank_templates.load_fanned()
+
+    assert fanned, "fanned exemplars missing"
+    assert set(fanned) <= set("23456789TJQKA")
+    assert fanned is not flat
+
+
+def test_a_fanned_match_reports_its_score():
+    fanned = rank_templates.load_fanned()
+    rank, score = rank_templates.match_fanned(fanned["8"][0])
+
+    assert rank == "8"
+    assert score > 0.9

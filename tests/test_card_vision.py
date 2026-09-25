@@ -180,3 +180,25 @@ def test_tesseract_still_covers_a_glyph_the_templates_do_not_know():
     # to stay behind them rather than be replaced.
     import numpy as np
     assert card_vision._read_isolated(np.zeros((30, 24), dtype=np.uint8)) is None
+
+
+def test_a_confident_fanned_template_match_is_taken_over_ocr():
+    # Harvested from live play: on fanned cards the templates' correct answers
+    # score 0.90-1.00 while their mistakes score 0.40-0.53, so a high bar
+    # separates them. Below the bar Tesseract decides, which is why the two
+    # together read every hand checked by eye where neither does alone.
+    import cv2
+    import numpy as np
+    from poker_vision import rank_templates
+
+    # Built from scratch rather than on top of _fanned_card, which draws its
+    # own glyph -- pasting over it leaves two overlapping eights and the
+    # isolator returns the mess.
+    fanned = rank_templates.load_fanned()
+    card = np.full((170, 115, 3), (160, 60, 40), dtype=np.uint8)
+    glyph = cv2.resize(fanned["8"][0], (24, 32), interpolation=cv2.INTER_NEAREST)
+    card[10:42, 8:32][glyph > 127] = (255, 255, 255)
+    cv2.circle(card, (26, 70), 18, (255, 255, 255), -1)
+    cv2.circle(card, (58, 110), 26, (255, 255, 255), -1)
+
+    assert card_vision.read_rank_from_top(card) == "8"
