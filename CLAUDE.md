@@ -1,0 +1,202 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+A vision layer that reads a screenshot of a PurePoker **practice / play-money**
+mobile table (portrait, 1206x2622) and emits structured table state per frame:
+seat positions, stacks, board/hole cards, pot, per-seat status. Class project.
+Not a real-money-site tool, and not intended to become one.
+
+Two deliberate scope constraints that shape the code — don't "fix" them:
+
+- **Single-frame only.** No cross-frame/session memory. Players can leave
+  mid-hand, so anything that remembers state across screenshots was judged
+  more harmful than helpful. `infer_positions` works within one frame.
+- **Capture: push-based today, native device capture is the chosen next step.**
+  An iOS Shortcuts automation POSTs every screenshot to a local Flask server;
+  that is what `server.py` implements and it is still the only working path.
+  Two corrections to the older note here, both measured rather than assumed
+  (2026-09-24):
+
+  - **Don't go back to the QuickTime-mirror / screen-region grab.** It isn't
+    blocked — it's just bad. A mirror window is bounded by the Mac display, so
+    the device screen is downscaled before you ever see a pixel. Measured over
+    48 real frames, it drops stack digits from 25px to ~17px and puts 98% of
+    them under Tesseract's usable ~20px floor (against 25% today). You cannot
+    recover it in software afterwards: re-running the pipeline on upscaled
+    frames *lost* more reads than it gained (236 → 229 → 223 stack reads at
+    1.0/1.5/2.0×), because `ocr_utils`' masks threshold on hard colour cutoffs
+    that interpolation softens.
+
+  - **Direct AVFoundation capture works — the old "unworkable" note is wrong.**
+    Exclusive access means *one consumer at a time*, not "never". With
+    QuickTime closed, a process that sets the CoreMediaIO property
+    `kCMIOHardwarePropertyAllowScreenCaptureDevices` can see and open the
+    USB-attached device. Verified on macOS 26.4.1 with a ~50-line Swift helper:
+    the iPad appears under mediaType **`.muxed`** — not `.video`, which is
+    exactly why a plain `cv2.VideoCapture` sweep never finds it — as an
+    `AVCaptureDeviceTypeExternal`, and delivers frames at the panel's native
+    1640×2360 with no display in the loop.
+
+## Commands
+
+```bash
+source venv/bin/activate          # Python 3.9 venv at ./venv
+brew install tesseract            # OCR binary; required for the pipeline AND the tests
+
+python -m pytest tests/ -q                                   # full suite (~4s)
+python -m pytest tests/test_table_parser.py -q               # one file
+python -m pytest tests/test_parser.py::test_infers_sb_and_bb_from_known_dealer -q   # one test
+```
+
+Use `python -m pytest`, not bare `pytest` — there's no `pyproject.toml` /
+`conftest.py` pinning `pythonpath`, so bare `pytest` can't import `poker_vision`.
+
+```bash
+python -m poker_vision.server                 # live mode: listens on 0.0.0.0:8765/upload
+python -m poker_vision.server --blinds 1/2    # also writes frames/session.json (SB/BB) for a future consumer
+curl -X POST --data-binary @some_screenshot.png http://localhost:8765/upload   # test without the phone
+
+python -m poker_vision.main --image frame.png                             # one-shot CLI
+python -m poker_vision.main --video gameplay.mp4 --fps 1 --out states.jsonl
+
+# Vision capture path (macOS only; needs the device unlocked and QuickTime closed)
+cd tools/ipad_capture && swiftc -O capture.swift -o capture    # build once
+tools/ipad_capture/capture --live                     # stream JSON lines from the attached device
+tools/ipad_capture/capture --dir frames/ipad          # replay saved frames (backtests, calibration)
+tools/ipad_capture/capture --dir frames/ipad --fast   # .fast recognition: ~14ms vs ~90ms, fewer detections
+
+python tools/region_preview.py <frame.png> <out.png>   # draw regions.py boxes over a frame to check calibration
+python tools/grid_overlay.py ...                       # pixel grid for measuring new boxes
+```
+
+There's also a `start poker [SB/BB]` zsh function in `~/.zshrc` that launches
+the server.
+
+**Real screenshots** live in `PurePokerScreenshots/` and `frames/incoming/`.
+Both are gitignored (personal data) — use them for manual before/after
+verification of OCR changes, never as committed test fixtures.
+
+## Architecture
+
+### Data flow
+
+```
+phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)──▶ server.worker_loop
+                                                                        │
+                                          TableParser.parse(frame) ◀────┘
+                                                │
+                              parse_seat × 9 seats ─▶ infer_positions ─▶ parse_board / parse_pot
+                                                │
+                                           TableState.to_dict()
+                                                │
+                     is_plausible_table? ──no──▶ "[skipped]"      yes ──▶ text_summary.format_summary ──▶ stdout
+```
+
+### Module map (why each exists — the split is intentional)
+
+| Module | Owns | Consumed by |
+|---|---|---|
+| `regions.py` | **Pure pixel calibration.** `SEATS` (per-seat boxes), `BOARD_SLOTS`, `HERO_CARDS`, `POT_BOX`, `RANK_OFFSET`, `scale_box`, `status_sub_zones`. Nothing here has poker meaning. | parser, card_vision, seat_layout |
+| `seat_layout.py` | `SEAT_ORDER` — this layout's seat-ids in *action-order direction* (D→SB→BB→UTG…). Asserts at import that it matches `regions.SEATS.keys()`. | `parser.infer_positions` |
+| `positions.py` | Canonical poker position names: `MIDDLE_POSITION_NAMES` (per table size) and `POSITION_ORDER` derived from it. Generic poker knowledge, layout-agnostic. | parser, text_summary |
+| `ocr_utils.py` | Color-keyed text masks (`white_mask`, `name_stack_mask`, `label_mask`, `badge_mask`), the single Tesseract call site `_ocr`, and `_cascade` (try psms in order, first non-None wins). Simple readers: `ocr_name`, `ocr_badge`, `ocr_bubble_action`, `ocr_persistent_label`. | parser, number_ocr, card_vision |
+| `number_ocr.py` | `ocr_number` for stacks/pot: geometric decimal-point recovery + digit-confusion recovery (`_DIGIT_CONFUSIONS`). Half the OCR complexity in the project lives here on purpose. | parser |
+| `card_vision.py` | Suit = background color class; rank = OCR of the corner glyph. Hero cards are fanned/rotated so `parse_hero_card` uses different crop/threshold strategies than flat `parse_card`. | parser |
+| `parser.py` | `TableParser` (per-seat orchestration: name/stack/badge/status fallback/in_hand) and `infer_positions` (fills unread positions by rotating `SEAT_ORDER` from one OCR'd badge). | server, main |
+| `table_state.py` | `Seat` / `TableState` dataclasses; `is_plausible_table` (≥4 seats with a stack ⇒ it's a poker table, not some other phone screen). | server |
+| `text_summary.py` | stdout formatter; seats sorted by `POSITION_ORDER`, suits as symbols. | server |
+| `server.py` | Flask upload endpoint + background worker thread, joined only by a `queue.Queue` of file paths. | — |
+| `main.py` | Offline CLI over image/video files. | — |
+| `vision_reader.py` | **The Vision path.** Turns the capture helper's JSON (recognised text + pixel positions) into a `TableState`: `parse_payload`, `parse_amount`, `find_seat_plates`, `find_pot`, `assign_to_seats`, `build_table_state`. Locates text by recognition, then assigns it to a seat by proximity — no per-field boxes. | — (server/main not yet wired) |
+| `seat_anchors.py` | One (x, y) anchor per seat, per device: `IPAD_PORTRAIT`, `IPHONE_PORTRAIT`. Derived by clustering real frames, not hand-measured. | vision_reader |
+| `tools/ipad_capture/capture.swift` | Swift helper: sets the CoreMediaIO flag, opens the USB iOS device, runs one `VNRecognizeTextRequest` per frame, emits JSON lines. `--dir` replays saved frames, `--live` captures. | — |
+| `overlay.py` | **Dead code.** Nothing imports it (leftover from the deleted cv2-window UI). Safe to delete. | — |
+
+### Things that only make sense if you know the history
+
+- **Text is found by color, not brightness.** Every mask in `ocr_utils` keys on
+  the UI's small text palette (white / orange-yellow / red-pink / badge
+  mid-band). Plain grayscale/Otsu thresholding was tried first and broke
+  whenever avatar art shared a crop with the text.
+- **Every OCR reader tries several Tesseract `--psm` modes** via
+  `ocr_utils._cascade`. No single psm was reliable across crops; the per-site
+  psm *order* is empirically tuned and documented inline — don't "normalize" them.
+- **`regions.SEATS[...]["badge"]` is always a list** of candidate boxes, even
+  for seats with one. Badges physically relocate on several seats depending on
+  whether the player holds cards (verified on 76 real sightings). Seats marked
+  "mirrored / unverified" in `regions.py` have never had a real player in the
+  sample data.
+- **`infer_positions` is deliberately conservative:** never overwrites an
+  OCR'd position, never assigns a role another seat already holds, and only
+  counts a seat as occupied if it has a name or stack (`in_hand` alone
+  false-positives on empty seats).
+- **`number_ocr` recovery is whole-string-match only.** A looser version once
+  fabricated a plausible wrong number from noise. If a substituted read doesn't
+  resolve to clean digits end-to-end, it falls back rather than guessing.
+- **A bigger screen is not more pixels per glyph.** The iPad was expected to
+  improve OCR because its frame holds more total pixels than the iPhone's.
+  Measured over 30 native iPad frames vs 47 iPhone screenshots, the iPad is
+  *worse on every metric*: stack digits 24px vs 26px median, sub-20px rate
+  20.3% vs 19.1%, sub-16px tail 16.2% vs 11.7%. The iPad renders @2x onto an
+  820×1180pt canvas while the iPhone renders @3x onto 402×874pt, so its extra
+  pixels buy more UI area, not larger text. Don't re-derive this by switching
+  devices again — and note the corollary: **device choice and capture
+  mechanism are independent.** Native AVFoundation capture works over USB for
+  any iOS device, so hands-free capture does not require leaving the iPhone,
+  and staying on the iPhone costs no recalibration.
+
+- **Apple Vision replaced per-crop Tesseract on the capture path, and it is
+  both faster and more accurate.** Backtested over the same 47 iPhone frames:
+  **9,305ms -> 90ms per frame (104x)**. 166 stack reads agreed, 41 disagreed;
+  six disagreements were adjudicated by hand against the images and **all six
+  went to Vision**. Most were Tesseract reading `3` as `2` — the gap recorded
+  below as unrecoverable, which Vision simply does not have. Tesseract also
+  invented a stack at a seat showing "Invite" in 4 of 109 empty slots (Vision:
+  0), always `4.0` at `top_right`, because the orange stack mask reads the
+  orange **Raise button**. Why the speedup is so large: `pytesseract` shells
+  out per call, and on a 10x10 blank image that round trip costs 49.9ms
+  against ~6ms of actual recognition — 129 calls per frame meant ~6.4s of pure
+  process overhead.
+
+- **Don't zip capture-helper payloads against a directory listing by
+  position.** The helper skips any frame it cannot decode, so line N stops
+  corresponding to file N. A backtest that did this silently compared each
+  engine against a *different* frame and reported 72 disagreements where there
+  were 41. Payloads carry a `source` field for exactly this reason; key on it.
+  (`frames/incoming/20260921-175610-101256.jpg` is a 4-byte truncated upload —
+  evidence the push pipeline can write corrupt files.)
+
+- **Known unrecoverable OCR gaps:** `'3'` read as `'2'` (no signal to
+  substitute on), an occasional `'5'` misread, and dim post-showdown hero-card
+  renders. These are documented, not bugs to chase without new data.
+
+## Testing conventions
+
+- **No mocking anywhere.** Tests drive real code on synthetic pixel data:
+  `test_number_ocr.py` draws glyph rectangles on a blank mask;
+  `test_table_parser.py` builds a full 1206x2622 frame with `cv2.putText`
+  patches in the right colors and calls `TableParser.parse_seat` end-to-end
+  through real Tesseract. Follow that pattern — if you need a controlled OCR
+  result, draw a legible patch in the mask's color band, don't stub the reader.
+- Synthetic textures placed near a status zone must stay **below** the
+  white/red mask thresholds (see `_draw_textured` in `test_table_parser.py`)
+  or they bleed into the label crop as false text.
+- `test_server.py` tests the queue seam from both sides: Flask `test_client`
+  POSTs into `create_app`, and `worker_loop` driven directly with fake parsers.
+  That's the one place fakes are appropriate (they stand in for the whole
+  parser, not for an OCR call).
+- When changing OCR/calibration behavior, the established verification is a
+  **before/after sweep across all real screenshots** (gitignored dirs above),
+  counting how many hands' output changed and eyeballing that every change is
+  a correction. Report those counts.
+
+## Docs
+
+- `docs/superpowers/specs/` and `docs/superpowers/plans/` hold the design
+  spec and implementation plan for the push-based capture pipeline.
+- `README.md`'s "How it works" section predates `number_ocr.py`,
+  `positions.py`, `seat_layout.py`, and the live server — the module map
+  above is current.

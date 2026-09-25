@@ -6,3 +6,9 @@ __pycache__/
 .DS_Store
 PurePoker Gameplay/
 PurePokerScreenshots/
+
+# Swift build artifact from tools/ipad_capture
+tools/ipad_capture/capture
+
+# Obsidian vault config
+.obsidian/
