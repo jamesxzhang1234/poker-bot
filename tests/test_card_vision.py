@@ -71,3 +71,41 @@ def test_a_dimmed_hero_card_keeps_its_suit():
 def test_hero_suits_are_told_apart_by_which_channel_leads():
     assert card_vision.classify_hero_suit((47, 44, 80)) == "h"     # red leads
     assert card_vision.classify_hero_suit((34, 55, 31)) == "c"     # green leads
+
+
+def test_a_ten_is_recognised_from_its_two_character_glyph():
+    # The client renders a ten as "10". The old code stripped the zero and
+    # was left with "1", which is not a rank, so it returned nothing and the
+    # psm cascade kept guessing until it landed on something valid -- a ten
+    # came back as an ace. It is also why read_rank never once returned T
+    # across every board card in the corpus.
+    assert card_vision._extract_rank("10") == "T"
+    assert card_vision._extract_rank("1O") == "T"
+    assert card_vision._extract_rank(" 10 ") == "T"
+
+
+def test_a_plain_rank_is_unaffected():
+    for text, rank in [("A", "A"), ("K", "K"), ("7", "7"), ("T", "T")]:
+        assert card_vision._extract_rank(text) == rank
+
+
+def test_an_unreadable_string_is_still_rejected():
+    for text in ["", "  ", "xyz", "%"]:
+        assert card_vision._extract_rank(text) is None
+
+
+def test_a_two_character_read_ending_in_zero_is_a_ten():
+    # A ten is the only rank drawn with two characters, and the cascade never
+    # sees it: the smaller windows crop the "10" and return a confident wrong
+    # single letter before a larger window can show the whole thing. Read
+    # without a whitelist at a large window, the real ten came back as "40" --
+    # the 1 misread as 4 -- while all 17 other cards in the corpus gave
+    # garbage that does not end in a zero.
+    assert card_vision.looks_like_ten("40") is True
+    assert card_vision.looks_like_ten("10") is True
+    assert card_vision.looks_like_ten("1O") is True
+
+
+def test_other_rank_misreads_are_not_taken_for_a_ten():
+    for text in ["eo,", "a,", "e)", "*)", "an", "+", "Fi", "Q", "", ":", "A", "0"]:
+        assert card_vision.looks_like_ten(text) is False, text

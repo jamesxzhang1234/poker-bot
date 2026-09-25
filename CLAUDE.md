@@ -239,6 +239,21 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   effectively free. Don't swap it for a faster one without first changing
   what makes this cheap.
 
+- **A ten is invisible to a whitelisted read, and the cascade hides it.**
+  The client draws a ten as the two characters "10", but `_RANK_WHITELIST`
+  constrains Tesseract to single rank characters, so it can never report what
+  it sees and picks the nearest single one instead. Worse, `read_rank_from_top`
+  tries its smallest window first, and that window crops the glyph and yields
+  a confident wrong letter before any larger window gets a chance -- a ten came
+  back as an ace. `read_rank_from_top` now does one **unwhitelisted** read at a
+  wide window first and calls it a ten if the result is two characters ending
+  in a zero. On the real ten that read "40" (the 1 misread as a 4) while all 17
+  other cards in the corpus produced nothing matching. Two other fixes were
+  tried and rejected: deskewing the card by its minimum-area box made ranks
+  *worse* (15/20 vs 16/20) because the angle estimate is unreliable, and a
+  glyph width/height test failed because component extraction misses dim and
+  green cards.
+
 - **Hero suits go by channel ratio; board suits go by brightness. Two
   sampling regions, two rules.** The client dims cards when a hand ends, and a
   dimmed diamond measured (60,40,23) -- inside the navy brightness range, so

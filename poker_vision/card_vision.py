@@ -82,10 +82,18 @@ def is_card_present(crop, edge_density_threshold=0.02):
 
 def _extract_rank(text):
     """Pull a valid rank character out of a raw OCR string, or None."""
-    text = text.replace("0", "").strip()  # stray zero from a misread "10"
-    if not text:
+    cleaned = text.strip().upper().replace("O", "0")
+    # A ten renders as the two characters "10", and neither is a rank. Map it
+    # rather than strip it: dropping the zero leaves "1", which is not in the
+    # whitelist either, so the read failed and the psm cascade kept going
+    # until it produced some other valid rank -- a ten came back as an ace,
+    # and no board card in the whole corpus ever read as T.
+    if cleaned.startswith("10") or cleaned.startswith("1"):
+        return "T"
+    cleaned = cleaned.replace("0", "").strip()
+    if not cleaned:
         return None
-    rank = text[0].upper()
+    rank = cleaned[0]
     return rank if rank in _RANK_WHITELIST else None
 
 
@@ -143,6 +151,41 @@ def _ocr_rank_bright(region_bgr, thresh=100):
     return _read_rank(mask, (6, 10, 8, 13, 7))
 
 
+# Characters a "1" is read as when the whitelist is off, and characters a "0"
+# is read as. A ten is the only two-character rank, so this shape is unique to
+# it -- checked against every other card in the corpus, none of which produced
+# anything matching.
+_TEN_FIRST = set("1470lIitT|")
+_TEN_LAST = set("0OoDQ")
+
+
+def looks_like_ten(text):
+    """Whether an unwhitelisted read of a rank glyph is the two-character ten."""
+    cleaned = text.strip()
+    if len(cleaned) != 2:
+        return False
+    return cleaned[0] in _TEN_FIRST and cleaned[1] in _TEN_LAST
+
+
+def _read_ten(card_crop, fraction=0.62):
+    """One unwhitelisted read at a window wide enough to show a whole "10".
+
+    The whitelist is what hides tens: constrained to single rank characters,
+    Tesseract can never report the two it actually sees, so it picks the
+    closest single one and the cascade accepts it. Reading once without the
+    whitelist is the only way to see the shape.
+    """
+    h = card_crop.shape[0]
+    region = card_crop[0:int(h * fraction), :]
+    if region.size == 0:
+        return False
+    gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)
+    upscaled = cv2.resize(cv2.bitwise_not(binary), None, fx=3, fy=3,
+                          interpolation=cv2.INTER_CUBIC)
+    return looks_like_ten(_ocr(upscaled, psm=10))
+
+
 def read_rank_from_top(card_crop, top_fractions=(0.4, 0.45, 0.5, 0.55, 0.6, 0.65)):
     """Like read_rank, but for a card whose rank doesn't sit at a reliable
     fixed corner offset (a rotated/fanned card -- see HERO_CARDS): searches
@@ -159,6 +202,11 @@ def read_rank_from_top(card_crop, top_fractions=(0.4, 0.45, 0.5, 0.55, 0.6, 0.65
     Known remaining gap: a dim/faded render state (seen on a post-showdown
     frame) can still misread even with this cascade -- not yet solved.
     """
+    # Tens first: the cascade below cannot find them, because its smaller
+    # windows crop the two-character glyph and return a confident wrong
+    # single letter before a larger window gets a chance.
+    if _read_ten(card_crop):
+        return "T"
     h = card_crop.shape[0]
     for fraction in top_fractions:
         rank = _ocr_rank_bright(card_crop[0:int(h * fraction), :])
