@@ -9,6 +9,23 @@ a USB-attached **iPad** (portrait, 1640x2360) and emits structured table state
 per frame: seat positions, stacks, board and hole cards, pot, per-seat status.
 Class project. Not a real-money-site tool, and not intended to become one.
 
+**This feeds a live decision engine.** Nothing consumes the state yet, but it
+is being built to, and that sets the bar for every change here: a wrong value
+is worse than a missing one, and a value that arrives after the decision is
+worth nothing. Two rules follow, and most of the notes below are instances of
+them.
+
+- **Never guess to fill a gap.** A reader that cannot see something reports
+  None and the engine can wait or fold; a reader that invents a plausible
+  answer produces a confident bad decision with nothing to flag it. This is
+  why `read_board` returns `[]` for an impossible board length, why
+  `parse_amount` refuses "19.", and why both trackers blank rather than hold
+  a stale value. It is also why `to_call` distinguishes 0 from None: "free"
+  and "unknown" lead to opposite actions.
+- **Know what each field costs.** See the latency budget below. The
+  expensive readers are gated so they run once a hand rather than once a
+  frame, and anything added to the per-frame path needs the same treatment.
+
 **The iPad is the only supported device.** The iPhone push-capture pipeline
 that preceded it lives in `archive/`, still runnable, and is described in
 `archive/__init__.py`. An iPhone-sized frame reaching the live path is now
@@ -122,6 +139,55 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
                      is_plausible_table? ──no──▶ "[skipped]"      yes ──▶ text_summary.format_summary ──▶ stdout
 ```
 
+### Latency budget
+
+Python side only; the helper adds ~90ms of Vision and PNG work per frame and
+runs concurrently. Two corpora, because they disagree and the difference is
+the point: `bt_live` is 24 quiet frames, `harvest` is 241 frames of real
+seven-handed play.
+
+| Stage | quiet | busy | When it runs |
+|---|---|---|---|
+| `parse_payload` (base64 + imdecode of 4 crops) | 8.8 ms | 8.8 ms | every frame |
+| `read_board` (template matching, both candidates) | 3.6 ms | 3.6 ms | every frame |
+| text → seats, pot, status, bets | ~13 ms | ~14 ms | every frame |
+| **`recover_stack` (Tesseract)** | **40.8 ms** | **202.5 ms** | every frame, per missed stack |
+| `read_hero_cards` | 169 ms | 169 ms | pre-flop only, via `HeroCardTracker` |
+| `PositionTracker` | ~0 ms | ~0 ms | every frame |
+
+**Stack recovery dominates everything else combined, and it scales with how
+busy the table is.** It costs ~200-245ms *per call* — not the ~56ms its
+docstring claimed, because `number_ocr.ocr_number` runs a cascade of psm
+attempts and each one is a separate Tesseract subprocess. It fires 0.17x per
+frame on the quiet corpus and 1.02x on the busy one, so `build_table_state`
+goes from 53ms to 216ms between them.
+
+It is not waste — it recovers 170 of the 246 stacks it is asked about, and
+those are stacks Vision genuinely cannot see. The cost is the *cascade*, not
+the reading: process spawn is most of each attempt. The fix is to stop paying
+process overhead per attempt (a persistent Tesseract via `tesserocr`, or one
+invocation over a batched image), not to give up the recovery. **This is the
+top latency item for the decision engine** and nothing else is close.
+
+Two more things to know before adding work here.
+
+**Template matching is ~260x cheaper than Tesseract** — 0.3ms against 78ms per
+card. That is why ranks moved to templates. Reach for Tesseract only where
+templates measurably fail, and gate it.
+
+**The hero read is a spike that lands at the worst moment.** 169ms once a hand
+sounds cheap until you notice the hand it fires on is pre-flop, which is
+exactly when the first decision is needed. Inside it, the unconditional
+ten-check (`_read_ten`) is 61 of the 78ms per card, because it runs an
+unwhitelisted Tesseract pass before anything else gets a chance. That is now
+avoidable: `isolate_rank_pair` screens for a two-character rank in ~0.3ms and
+can decide whether the ten path is needed at all. Prototyped, not adopted — on
+the labelled hands it held 16/16 rank accuracy, took the fast path on 8/16
+cards, fired on zero non-tens and caught the one real ten; on the live corpus
+the fanned template answers at >=0.90 on 40/47 crops. It reorders the most
+accuracy-critical path, so it wants a bigger labelled set (one ten is not
+enough) before it goes in.
+
 ### Module map (why each exists — the split is intentional)
 
 | Module | Owns | Consumed by |
@@ -145,7 +211,7 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
 | `hero_cards.py` | `HeroCardTracker` — reads the hero's hole cards once a hand at preflop and holds them. Reasons solely about whether a read is still valid, and blanks rather than risk showing a stale hand. | vision_live |
 | `position_tracker.py` | `PositionTracker` — holds the positions `infer_positions` worked out while the blind badges were up, and drops them at the next deal. The badges are a pre-flop affordance (93/143 pre-flop frames carry one against 19/98 post-flop) and the dealer button is a graphic Vision never reads, so without this 53% of frames had no position at all. One of the two sanctioned pieces of cross-frame memory. | vision_live |
 | `dashboard.py` | Renders a `TableState` as a fixed block rewritten in place, `*` marking what moved and `[HELD]` marking a stale one. Pure: state in, string out. Holds the previous state **for display only** — that memory never reaches the parser. | vision_live |
-| `vision_live.py` | Live runner: spawns the capture helper, turns its JSON lines into `TableState`, prints `format_summary`. Picks the anchor set from the frame size and skips a size it doesn't know rather than guessing. **No work queue on purpose** — the helper spends ~90ms/frame and this side ~0.15ms, so the consumer cannot fall behind; frames are dropped in the helper, where the diff gate lives. | — |
+| `vision_live.py` | Live runner: spawns the capture helper, turns its JSON lines into `TableState`, prints `format_summary`. Picks the anchor set from the frame size and skips a size it doesn't know rather than guessing. **No work queue on purpose** — but not for the reason first written here. This side is now the slower half (53-216ms against the helper's ~90ms), so a queue would build an unbounded backlog. `newest_first` drains the pipe and renders only the latest, which bounds lag at one parse whatever the capture rate. | — |
 | `tools/ipad_capture/capture.swift` | Swift helper: sets the CoreMediaIO flag, opens the USB iOS device, runs one `VNRecognizeTextRequest` per frame, emits JSON lines. `--dir` replays saved frames, `--live` captures. | — |
 | `position_inference.py` | `infer_positions` — names every occupied seat's position from one badge read in the same frame. Lifted out of the parser so the capture path need not import the iPhone calibration to place positions. | vision_reader |
 | `session.py` | Blind sizes typed in at launch, written to `frames/session.json` for a later consumer. Not specific to how frames arrive. | vision_live, archive/server |
@@ -542,8 +608,74 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   substitute on), an occasional `'5'` misread, and dim post-showdown hero-card
   renders. These are documented, not bugs to chase without new data.
 
+## How to change a reader
+
+This is the loop that has actually been finding bugs. It came out of a session
+where a 241-frame live capture showed the board reader getting 5 of 16 boards
+right while every test passed.
+
+1. **Capture live frames before theorising.** The tests all passed and the
+   backtest was clean; the bugs were only visible in volume. A few hundred
+   frames of ordinary play is enough to make misses countable, and counting
+   them is what tells you which bug is worth fixing.
+
+2. **Label from the pixels, never from the reader's own output.** Crop the
+   thing, look at it, write down what it is. I once labelled a board card
+   `9s` by copying an earlier run's answer, then "fixed" a bug that did not
+   exist and nearly reverted a correct read. If ground truth comes from the
+   thing being tested, it is not ground truth.
+
+3. **Measure geometry off real frames; do not derive it.** Every pixel
+   constant that was computed rather than measured has been wrong. Find the
+   edges against the felt across several frames and take the numbers. Derived
+   geometry fails at the far end of a row, where a small pitch error has
+   accumulated, so a reader that works on the left and fails on the right is
+   the signature.
+
+4. **Prefer adding a scored candidate to replacing a working path.** The ten
+   was fixed by offering `isolate_rank_pair` alongside the existing glyph and
+   keeping whichever scores higher. Single-character ranks produce no pair, so
+   twelve of thirteen ranks could not regress. Replacing the path outright was
+   tried once for hero ranks and cost 20/21 → 16/21.
+
+5. **Separate "cannot read" from "read as nothing".** Count frames where
+   something is plainly on screen and the reader returned empty. That number
+   is the one that matters; total coverage hides it. It also distinguishes
+   real misses from states the reader is *supposed* to reject, like the deal
+   animation.
+
+6. **Re-verify by eye after the fix, including the frames that changed.** A
+   diff of before/after reads, rendered as images with both answers drawn on,
+   catches the case where a number went up and an individual read got worse.
+
+7. **Report before/after counts, not adjectives.** Every claim in this file
+   has a number behind it because the ones that did not turned out to be
+   wrong.
+
 ## Testing conventions
 
+- **Synthetic fixtures for logic; real crops for rendering.** Most tests draw
+  their own pixels (below). But a bug that exists *because* of how the device
+  renders a glyph cannot be reproduced by a glyph you drew yourself — the
+  first attempt at both the iPad ace and the board ten passed against the
+  unfixed code, which proves nothing. Those two keep a real card crop in
+  `tests/data/`, and the test says why it has to be real. Reach for this only
+  when a drawn fixture provably cannot fail.
+- **A fixture that does not fail first is not evidence.** Several drawn
+  fixtures have been too forgiving to reproduce the bug: cards too plain to
+  clear the edge-density gate, a glyph placed far enough from the card edge
+  that the clipping under test did not touch it. Watch the test fail, and
+  check the failure is the *bug* and not a typo or a missing import.
+- **If a test passes the moment you write it, mutate the code to prove it can
+  fail.** Break the specific guard it covers and confirm it goes red. Guard
+  tests asserting `is None` are the usual offenders — they pass against a stub
+  that never does anything.
+- **Invariants need no labels and catch what eyeballing misses.** No card in
+  both the board and a hand, ≤5 board cards, ≤2 hole cards, one hero,
+  non-negative stacks, no duplicate seat ids, no role on two seats. Run these
+  across every captured corpus after any reader change; the count should stay
+  at zero. One invariant that looked obvious was wrong — see the note on bets
+  and the pot — so a firing invariant means "check the invariant too".
 - **No mocking anywhere.** Tests drive real code on synthetic pixel data:
   `test_number_ocr.py` draws glyph rectangles on a blank mask;
   `test_table_parser.py` builds a full 1206x2622 frame with `cv2.putText`

@@ -403,10 +403,19 @@ def recover_stack(text_mask, plate, width, height):
     directly above. 19 of the 29 stacks the fixed-region parser found and this
     path missed were single characters, so this is the main accuracy gap.
 
-    Tesseract is used here on purpose, and only here. It is slow per call
-    (~56ms, nearly all process overhead) but it does read isolated glyphs,
-    which is exactly Vision's weakness -- and it runs on a handful of crops
-    per frame rather than 129, so the cost stays small.
+    Tesseract is used here on purpose, and only here: it reads isolated
+    glyphs, which is exactly Vision's weakness.
+
+    It is also the most expensive thing in the pipeline. Measured, not
+    estimated: ~200-245ms per call, because ocr_number runs a cascade of psm
+    attempts and each is a separate subprocess. It fires about once a frame on
+    a busy table, which takes build_table_state from 53ms to 216ms. An earlier
+    note here said ~56ms and that the cost stayed small because it runs on
+    only a handful of crops; the per-call figure was four times too low.
+
+    It earns its place -- it recovers 170 of the 246 stacks it is asked about.
+    The waste is the process-per-attempt cascade, not the reading. See the
+    latency budget in CLAUDE.md before changing this.
     """
     if text_mask is None:
         return None
