@@ -3,6 +3,9 @@
 Values here are real measurements sampled from 163 card backgrounds across
 both devices, not invented colours.
 """
+import cv2
+import numpy as np
+
 from poker_vision import card_vision
 
 
@@ -202,3 +205,61 @@ def test_a_confident_fanned_template_match_is_taken_over_ocr():
     cv2.circle(card, (58, 110), 26, (255, 255, 255), -1)
 
     assert card_vision.read_rank_from_top(card) == "8"
+
+
+def _plain_card(bgr=(160, 60, 40)):
+    card = np.full((170, 115, 3), bgr, dtype=np.uint8)
+    cv2.circle(card, (58, 110), 26, (255, 255, 255), -1)      # suit pip
+    return card
+
+
+def test_a_single_character_rank_has_no_second_half():
+    # isolate_rank_pair is offered alongside isolate_rank_glyph, so it must
+    # stay silent on the twelve ranks drawn as one character. The suit pip is
+    # the thing most likely to be mistaken for a second half; it sits below
+    # the rank rather than beside it, so the baseline test rejects it.
+    card = _plain_card()
+    cv2.putText(card, "7", (8, 42), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+
+    assert card_vision.isolate_rank_pair(card) is None
+
+
+def test_the_two_halves_of_a_ten_are_returned_together():
+    card = _plain_card()
+    cv2.putText(card, "10", (6, 42), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+
+    one = card_vision.isolate_rank_glyph(card)
+    both = card_vision.isolate_rank_pair(card)
+
+    assert both is not None
+    assert both.shape[1] > one.shape[1], "the pair should be wider than the 1 alone"
+
+
+def test_a_distant_neighbouring_glyph_is_not_paired():
+    # On a fanned hand the next card's rank is the only other glyph nearby.
+    # It sits far to the right, well beyond a ten's inter-character gap.
+    card = _plain_card()
+    cv2.putText(card, "7", (8, 42), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+    cv2.putText(card, "4", (66, 42), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+
+    assert card_vision.isolate_rank_pair(card) is None
+
+
+def test_a_dimmed_board_card_keeps_its_suit():
+    # At showdown the client greys out the cards not in the winning hand.
+    # Dimming drops a club's green from ~110 to 79, and the board rule called
+    # anything under 80 a spade -- so a real showdown board read "As 7c Jc 6s
+    # 5s" when it was Ac 7c Jc 6s 8c. Brightness cannot separate a dimmed
+    # card from navy; the channel ratios can, and they survive dimming.
+    #
+    # Measured on 377 board-card samples: navy tops out at b/r 2.38 and the
+    # dimmest real diamond starts at 4.00.
+    for bgr, suit in [
+        ((29, 79, 25), "c"),     # dimmed club   -- was read "s"
+        ((21, 52, 19), "c"),     # dimmed club, darker still
+        ((78, 44, 17), "d"),     # dimmed diamond -- was read "s"
+        ((77, 45, 18), "d"),
+        ((25, 23, 87), "h"),     # dimmed heart
+        ((40, 25, 21), "s"),     # a real spade in the same brightness band
+    ]:
+        assert card_vision.classify_suit(bgr) == suit, bgr

@@ -163,3 +163,80 @@ def test_a_card_offset_within_its_slot_is_still_read():
 
     assert len(board) == 3, board
     assert [c[0] for c in board] == ["5", "Q", "7"]
+
+
+def test_a_real_ipad_ace_on_the_board_is_read():
+    # A live hand's whole board went unread because its first card was an
+    # ace. The flat set held only iPhone aces; the iPad's scored 0.47, under
+    # the 0.55 floor, and led "4" by 0.01. read_board stops at the first
+    # unreadable slot, so all five cards were lost for fourteen frames.
+    #
+    # This is the one case a drawn fixture cannot reproduce -- the glyph
+    # matched nothing precisely because of how the device renders it -- so
+    # the card crop is a real one, kept beside the test.
+    from pathlib import Path
+
+    from poker_vision import seat_anchors
+
+    crop = cv2.imread(str(Path(__file__).parent / "data" / "ipad_board_ace.png"))
+    assert crop is not None, "fixture missing"
+
+    assert board_reader.best_rank(crop, seat_anchors.IPAD_RANK_OFFSET) == "A"
+
+
+def test_a_real_ipad_ten_on_the_board_is_read():
+    # "10" is the one rank drawn as two characters, and isolate_rank_glyph
+    # returns a single component -- so a board ten came back as just its "1",
+    # which scores as a J. A live showdown opened Td Tc and the board was
+    # lost from the first slot. The fixed corner box holds both characters
+    # but also the top of the suit pip, which is too large to be dropped as
+    # a fragment, so that path reads the ten no better.
+    from pathlib import Path
+
+    from poker_vision import seat_anchors
+
+    crop = cv2.imread(str(Path(__file__).parent / "data" / "ipad_board_ten.png"))
+    assert crop is not None, "fixture missing"
+
+    assert board_reader.best_rank(crop, seat_anchors.IPAD_RANK_OFFSET) == "T"
+
+
+def _ipad_frame(cards):
+    """A frame with `cards` drawn where the iPad actually renders them.
+
+    Positions are measured off seven real five-card boards, not taken from
+    the slot constants this exercises: the cards start at x=494, repeat every
+    132px and are 125px wide, sitting at y=985 over 154px. The rank glyph
+    sits 14px in from the card's left edge and 13px down, which is what makes
+    the accumulated slot drift bite.
+    """
+    frame = np.zeros((1300, 1700, 3), dtype=np.uint8)
+    frame[:] = (90, 60, 30)                          # felt
+    templates = rank_templates.load()
+    for i, card in enumerate(cards):
+        rank, suit = card[0], card[1]
+        x1, y1 = 494 + i * 132, 985
+        frame[y1:y1 + 154, x1:x1 + 125] = SUIT_BGR[suit]
+        cv2.circle(frame, (x1 + 62, y1 + 115), 30, (255, 255, 255), -1)   # suit pip
+        glyph = cv2.resize(templates[rank][0], (34, 37), interpolation=cv2.INTER_NEAREST)
+        region = frame[y1 + 13:y1 + 50, x1 + 14:x1 + 48]
+        region[glyph > 127] = (255, 255, 255)
+    return frame
+
+
+def test_the_board_slots_line_up_with_where_the_ipad_draws_the_cards():
+    # The slots were derived as pitch 136 / width 118, but the cards repeat
+    # every 132px and are 125px wide. The error accumulates left to right, so
+    # by the fifth slot the crop sits 17px right of its card and cuts off the
+    # rank glyph -- the river read as the wrong card or not at all. Measured
+    # across a live corpus, this cost 11 of 16 known boards.
+    from poker_vision import seat_anchors
+
+    # A ten in the fifth slot, as the live board that exposed this had. The
+    # drift clips only a few pixels, which a single glyph survives; "10" is
+    # two characters and loses its "1", leaving a bare "0" that matched Q.
+    cards = ["Jd", "4h", "9s", "8h", "Tc"]
+    frame = _ipad_frame(cards)
+
+    assert board_reader.read_board(
+        frame, seat_anchors.IPAD_BOARD_SLOTS, seat_anchors.IPAD_RANK_OFFSET) == cards

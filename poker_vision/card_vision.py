@@ -4,38 +4,50 @@ import numpy as np
 
 from .ocr_utils import _cascade, _ocr
 
-# Reference BGR colors sampled from real card backgrounds (see calibration
-# notes in the device's calibration module). Suits are color-coded by this
-# client, so we classify
-# by dominant channel + overall brightness rather than needing per-rank
-# templates for every suit.
+# Suits are colour-coded by this client, so they are classified from the
+# card's background colour rather than from per-suit pip templates. See
+# classify_suit for how the four colours are told apart.
 _RANK_WHITELIST = "23456789TJQKA"
 
 
-# Spades render on a dark navy background, not truly black. The test is on
-# the BRIGHTEST channel rather than the sum of all three, because the sum
-# leaves almost no margin: sampled across 163 real card backgrounds on both
-# devices, spades reach a sum of 107 while the old cutoff sat at 110. The same
-# iPad spade measured 107 in one frame and 116 in the next and so read "4s"
-# then "4d". By brightest channel the classes are far apart -- spades top out
-# at 55 and the dimmest non-spade (a club) starts at 110 -- so this threshold
-# sits in a wide empty gap instead of on top of the data.
+# Spades render on a dark navy background, not truly black, so the only suit
+# they can be confused with is the other blue one, diamonds.
 #
-# This is for BOARD cards, sampled from a corner patch of an unobstructed
-# card. Hero cards are sampled differently and need their own rule; see
-# classify_hero_suit.
-_SPADE_MAX_CHANNEL = 80
+# This used to be a brightness test -- anything dimmer than 80 in its
+# brightest channel was a spade -- on the grounds that spades topped out at
+# 55 and the dimmest non-spade started at 110. That gap is real for cards at
+# full brightness and absent once the client dims them, which it does to the
+# losing hands at showdown. A dimmed club measured 79 and a dimmed diamond
+# 78, both inside the spade range, and a real board read "As 7c Jc 6s 5s"
+# when it was Ac 7c Jc 6s 8c.
+#
+# Most of that damage is undone by asking the dominant-channel questions
+# first: a club stays green-dominant and a heart stays red-dominant however
+# far they are dimmed, and under the old order the brightness test answered
+# for them before either question was put.
+#
+# That leaves spades against diamonds, the two blue suits, which does need a
+# number. The gap between them is how far blue runs ahead of red -- a
+# difference, not a ratio. A ratio separates the iPad cleanly (navy 1.70-2.38
+# against 4.00-5.94) but not the iPhone, whose blue sits at 2.61 against a
+# navy of 2.28. The difference separates both, because dimming scales the
+# channels together and leaves navy's near-grey balance intact:
+#
+#     navy (spades)   b-r  7 -  25    across both devices
+#     diamonds        b-r 59 - 113    dimmed ones included
+#
+# so the cutoff sits in the empty band between 25 and 59.
+_SPADE_MAX_BLUE_OVER_RED = 40
 
 
 def classify_suit(bgr_mean):
     b, g, r = bgr_mean
-    if max(b, g, r) < _SPADE_MAX_CHANNEL:
-        return "s"
     if g >= b and g >= r:
         return "c"  # clubs: green
-    if b >= g and b >= r:
-        return "d"  # diamonds: blue
-    return "h"  # hearts: red
+    if r > b and r > g:
+        return "h"  # hearts: red
+    # Both remaining suits are blue. Navy is near-grey; a diamond is not.
+    return "s" if b - r < _SPADE_MAX_BLUE_OVER_RED else "d"
 
 
 # Hero cards need a different test from the board's. Their suit is sampled
@@ -47,7 +59,8 @@ def classify_suit(bgr_mean):
 # navy sits at 1.47-1.54.
 #
 # The board rule cannot simply adopt this: sampled from a corner, board navy
-# runs 2.25-2.5 and board blue 2.61, which ratios cannot separate. Two
+# runs 2.25-2.5 and board blue 2.61, which ratios cannot separate -- which is
+# why classify_suit settles the same pair on a difference instead. Two
 # sampling regions, two rules.
 _HERO_DIAMOND_BLUE_RATIO = 2.0
 
@@ -222,6 +235,22 @@ def isolate_rank_glyph(card_crop):
     a card face runs from navy through green to dimmed blue and a single
     threshold finds the glyph on some and nothing on others.
     """
+    found = _rank_components(card_crop)
+    if found is None:
+        return None
+    mask, parts = found
+    # The rank sits above and left of everything else on the card.
+    x, y, bw, bh = min(parts, key=lambda p: p[1] + p[0] * 0.5)
+    return mask[y:y + bh, x:x + bw] * 255
+
+
+def _rank_components(card_crop):
+    """(mask, parts) for the glyph-sized blobs in the card's top-left corner.
+
+    Each part is (x, y, w, h) into `mask`. Split out of isolate_rank_glyph so
+    that isolate_rank_pair can reuse the same blobs rather than re-deriving
+    them from a second, possibly different, threshold.
+    """
     h, w = card_crop.shape[:2]
     top = card_crop[0:int(h * 0.55), 0:int(w * 0.70)]
     if top.size == 0:
@@ -231,7 +260,7 @@ def isolate_rank_glyph(card_crop):
     mask = (gray > threshold).astype(np.uint8)
     count, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
 
-    best = None
+    parts = []
     for i in range(1, count):
         x, y = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP]
         bw, bh = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
@@ -240,11 +269,58 @@ def isolate_rank_glyph(card_crop):
             continue
         if bw < 5 or area < 60 or area < 0.12 * bw * bh:
             continue
-        # The rank sits above and left of everything else on the card.
-        rank_of = y + x * 0.5
-        if best is None or rank_of < best[0]:
-            best = (rank_of, mask[y:y + bh, x:x + bw] * 255)
-    return None if best is None else best[1]
+        parts.append((x, y, bw, bh))
+    return None if not parts else (mask, parts)
+
+
+# How far apart two characters of one rank may sit, as a fraction of the left
+# character's width; how much of their height must overlap; and how different
+# their heights may be. A "10" is one glyph drawn as two characters, so its
+# halves are near-touching, share a baseline and are the same height. The
+# bounds are deliberately tight: the only thing to the right of a rank that
+# could be mistaken for its other half is the neighbouring card's rank, which
+# on a fanned hand sits much further away.
+_PAIR_MAX_GAP = 0.6
+_PAIR_MIN_OVERLAP = 0.6
+_PAIR_HEIGHT_RATIO = (0.7, 1.4)
+
+
+def isolate_rank_pair(card_crop):
+    """The rank as TWO adjacent characters -- i.e. a "10" -- or None.
+
+    isolate_rank_glyph returns one connected component, which is right for
+    twelve of the thirteen ranks and wrong for the ten: it hands back the "1"
+    alone, and a lone "1" scores as a J. A live showdown opened Td Tc and the
+    board was lost from its first slot that way.
+
+    This is offered as an extra candidate rather than a replacement. When the
+    card is not a ten there is no second character to find and this returns
+    None; when the pairing is spurious the merged shape matches no rank well,
+    and the caller keeps whichever candidate scores highest.
+    """
+    found = _rank_components(card_crop)
+    if found is None:
+        return None
+    mask, parts = found
+    if len(parts) < 2:
+        return None
+
+    left, *rest = sorted(parts, key=lambda p: p[0])
+    lx, ly, lw, lh = left
+    for rx, ry, rw, rh in rest:
+        gap = rx - (lx + lw)
+        overlap = min(ly + lh, ry + rh) - max(ly, ry)
+        low, high = _PAIR_HEIGHT_RATIO
+        if not 0 <= gap <= _PAIR_MAX_GAP * lw:
+            continue
+        if overlap < _PAIR_MIN_OVERLAP * min(lh, rh):
+            continue
+        if not low <= rh / lh <= high:
+            continue
+        x1, y1 = min(lx, rx), min(ly, ry)
+        x2, y2 = max(lx + lw, rx + rw), max(ly + lh, ry + rh)
+        return mask[y1:y2, x1:x2] * 255
+    return None
 
 
 def _read_isolated(glyph):

@@ -65,9 +65,21 @@ IPHONE_PORTRAIT_SIZE = (1206, 2622)
 # left to right into a fixed five-slot band -- they are NOT centred as the
 # count grows, which is what lets one set of slots serve every street.
 #
-# iPad slots derived from real frames: pitch 136px, width 118px, and the band
-# (495..1157) centres on 826 against the frame's own centre of 820.
-IPAD_BOARD_SLOTS = [(495 + i * 136, 985, 495 + i * 136 + 118, 1139) for i in range(5)]
+# iPad slots measured off seven real five-card boards by finding each card's
+# edges against the felt: the cards start at x=494, repeat every 132px and
+# are 125px wide.
+#
+# The earlier figures -- pitch 136, width 118 -- were derived rather than
+# measured, and the 4px pitch error accumulated left to right until the fifth
+# slot sat 17px right of its card. That clips the left of the rank glyph,
+# which a single character survives and a "10" does not: it loses its "1" and
+# the bare "0" matched Q, so a live river read Qc for a ten. Re-measuring took
+# the labelled boards in the live corpus from 5/16 to 16/16.
+#
+# The band is cropped 12px above the cards (973 rather than 985). The glyph
+# starts 13px below the card's top edge, and without that margin it touches
+# the crop boundary and the isolator clips it.
+IPAD_BOARD_SLOTS = [(494 + i * 132, 973, 494 + i * 132 + 125, 1127) for i in range(5)]
 
 # Rank glyph in a card's top-left corner, relative to the slot's (x1, y1).
 # Taller than the iPhone's because the iPad renders the card larger; it stops

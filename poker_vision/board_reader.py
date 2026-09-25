@@ -53,8 +53,9 @@ def rank_glyph(card_crop, rank_offset, level=_GLYPH_LEVELS[0]):
 def best_rank(card_crop, rank_offset):
     """The rank this card shows.
 
-    Tries the glyph located by shape first, then the fixed corner box at each
-    brightness cutoff, and keeps the highest-scoring match. Locating it matters
+    Tries the glyph located by shape first -- as one character and as two,
+    since "10" is the one rank drawn as a pair -- then the fixed corner box
+    at each brightness cutoff, and keeps the highest-scoring match. Locating it matters
     because the slots drift right of the cards by the fifth position, so the
     river's rank falls outside the fixed box and went unread entirely -- on a
     live hand that cost the whole river card. The cutoffs matter because a
@@ -63,10 +64,16 @@ def best_rank(card_crop, rank_offset):
     """
     best, best_score = None, 0.0
 
-    located = card_vision.isolate_rank_glyph(card_crop)
-    if located is not None:
+    # The located glyph and, when the rank is drawn as two characters, the
+    # pair. Scoring both and keeping the winner means the ten is found
+    # without the other twelve ranks having to change: a single-character
+    # rank yields no pair at all.
+    for isolate in (card_vision.isolate_rank_glyph, card_vision.isolate_rank_pair):
+        located = isolate(card_crop)
+        if located is None:
+            continue
         scores = rank_templates.score_all(located)
-        if scores:
+        if scores and scores[0][1] > best_score:
             best, best_score = scores[0]
 
     for level in _GLYPH_LEVELS:
