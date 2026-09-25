@@ -32,15 +32,23 @@ import AppKit
 // numbers.
 let BOARD_RECT = (x: 0.18, y: 0.40, w: 0.63, h: 0.10)
 
-func boardStrip(_ cg: CGImage) -> String? {
+// The hero's own cards, which the text mask cannot serve because suit is a
+// colour. Covers the region on both devices: the fanned pair spans
+// x 0.58-0.72 / y 0.78-0.86 on the iPad and x 0.58-0.83 / y 0.76-0.88 on the
+// iPhone.
+let HERO_RECT = (x: 0.55, y: 0.74, w: 0.30, h: 0.15)
+
+func cropStrip(_ cg: CGImage, _ r: (x: Double, y: Double, w: Double, h: Double)) -> String? {
     let W = Double(cg.width), H = Double(cg.height)
-    let rect = CGRect(x: BOARD_RECT.x * W, y: BOARD_RECT.y * H,
-                      width: BOARD_RECT.w * W, height: BOARD_RECT.h * H)
+    let rect = CGRect(x: r.x * W, y: r.y * H, width: r.w * W, height: r.h * H)
     guard let cropped = cg.cropping(to: rect) else { return nil }
     let rep = NSBitmapImageRep(cgImage: cropped)
     guard let png = rep.representation(using: .png, properties: [:]) else { return nil }
     return png.base64EncodedString()
 }
+
+func boardStrip(_ cg: CGImage) -> String? { cropStrip(cg, BOARD_RECT) }
+func heroStrip(_ cg: CGImage) -> String? { cropStrip(cg, HERO_RECT) }
 
 // MARK: - Text mask
 
@@ -87,7 +95,8 @@ func textMask(_ cg: CGImage) -> String? {
 struct Emitter {
     static func emit(index: Int, timestamp: Double, width: Int, height: Int,
                      observations: [(String, CGRect, Float)], source: String? = nil,
-                     strip: String? = nil, mask: String? = nil) {
+                     strip: String? = nil, mask: String? = nil,
+                     hero: String? = nil) {
         var rows: [[String: Any]] = []
         let W = Double(width), H = Double(height)
         for (text, bb, conf) in observations {
@@ -116,6 +125,11 @@ struct Emitter {
             payload["board_strip"] = strip
             payload["board_strip_rect"] = [BOARD_RECT.x, BOARD_RECT.y,
                                            BOARD_RECT.w, BOARD_RECT.h]
+        }
+        if let hero = hero {
+            payload["hero_strip"] = hero
+            payload["hero_strip_rect"] = [HERO_RECT.x, HERO_RECT.y,
+                                          HERO_RECT.w, HERO_RECT.h]
         }
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let line = String(data: data, encoding: .utf8) else { return }
@@ -167,7 +181,7 @@ func runDirectory(_ dir: String, fast: Bool) {
             .data(using: .utf8)!)
         Emitter.emit(index: i, timestamp: Date().timeIntervalSince1970,
                      width: cg.width, height: cg.height, observations: obs, source: name,
-                     strip: boardStrip(cg), mask: textMask(cg))
+                     strip: boardStrip(cg), mask: textMask(cg), hero: heroStrip(cg))
     }
 }
 
@@ -239,7 +253,7 @@ final class LiveCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
         let obs = recogniseText(cg, fast: fast)
         Emitter.emit(index: index, timestamp: Date().timeIntervalSince1970,
                      width: cg.width, height: cg.height, observations: obs,
-                     strip: boardStrip(cg), mask: textMask(cg))
+                     strip: boardStrip(cg), mask: textMask(cg), hero: heroStrip(cg))
         index += 1
     }
 }

@@ -1,0 +1,124 @@
+"""Tests for tracking the hero's hole cards across a hand.
+
+Reading the fanned hole cards is expensive (~114ms, sometimes far more) and
+they only change once a hand, so the read happens at preflop and the answer is
+held. Two separate conditions govern that, and keeping them separate is the
+whole point:
+
+  * WHEN MAY WE READ -- only with an empty board, i.e. preflop.
+  * WHEN DOES THE HELD ANSWER STOP BEING TRUE -- when the hero card region
+    itself changes. Measured on real frames, ordinary animation moves that
+    region by 4-468 while a new deal moves it by 9471-9772, a 20x gap.
+
+Using the board alone for both was tried and is wrong: during a run-it-once
+showdown the board renders elsewhere, reads as empty, and a mid-hand re-read
+picked up the wrong cards and held them for the rest of the hand.
+"""
+from poker_vision.hero_cards import HeroCardTracker
+
+SAME = [0] * 16
+OTHER = [200] * 16
+
+
+def _reader(*results):
+    queue = list(results)
+    calls = []
+
+    def read():
+        calls.append(True)
+        return queue.pop(0) if queue else None
+
+    read.calls = calls
+    return read
+
+
+def test_reads_the_cards_at_preflop():
+    read = _reader(["Ad", "Kd"])
+    tracker = HeroCardTracker()
+
+    assert tracker.update([], read, SAME) == ["Ad", "Kd"]
+    assert len(read.calls) == 1
+
+
+def test_holds_them_once_the_flop_lands():
+    read = _reader(["Ad", "Kd"])
+    tracker = HeroCardTracker()
+    tracker.update([], read, SAME)
+
+    assert tracker.update(["3c", "6c", "6d"], read, SAME) == ["Ad", "Kd"]
+    assert len(read.calls) == 1
+
+
+def test_does_not_reread_across_a_long_preflop():
+    read = _reader(["Ad", "Kd"])
+    tracker = HeroCardTracker()
+    for _ in range(5):
+        tracker.update([], read, SAME)
+
+    assert len(read.calls) == 1
+
+
+def test_a_board_that_briefly_misreads_as_empty_does_not_trigger_a_reread():
+    # The run-it-once showdown renders the board elsewhere and it reads as
+    # empty. The cards on screen have not changed, so neither should ours.
+    read = _reader(["Ad", "Kd"], ["4s", "Qs"])
+    tracker = HeroCardTracker()
+    tracker.update([], read, SAME)
+    tracker.update(["Ts", "Qd", "2s"], read, SAME)
+
+    assert tracker.update([], read, SAME) == ["Ad", "Kd"]
+    assert len(read.calls) == 1
+
+
+def test_new_cards_on_screen_trigger_a_fresh_read():
+    read = _reader(["Ad", "Kd"], ["7s", "2h"])
+    tracker = HeroCardTracker()
+    tracker.update([], read, SAME)
+
+    assert tracker.update([], read, OTHER) == ["7s", "2h"]
+    assert len(read.calls) == 2
+
+
+def test_new_cards_with_no_preflop_frame_show_nothing_rather_than_the_old_ones():
+    # The capture gate can skip preflop entirely. Holding the previous hand's
+    # cards would show the wrong hand with no sign of it; blank is the failure
+    # someone actually notices.
+    read = _reader(["Ad", "Kd"])
+    tracker = HeroCardTracker()
+    tracker.update([], read, SAME)
+
+    assert tracker.update(["9h", "2s", "Kc"], read, OTHER) == []
+    assert len(read.calls) == 1        # never read outside preflop
+
+
+def test_starting_mid_hand_shows_nothing_until_the_next_deal():
+    read = _reader(["Ad", "Kd"])
+    tracker = HeroCardTracker()
+
+    assert tracker.update(["3c", "6c", "6d"], read, SAME) == []
+    assert read.calls == []
+
+
+def test_keeps_trying_through_preflop_until_a_read_succeeds():
+    read = _reader(None, [], ["Ad", "Kd"])
+    tracker = HeroCardTracker()
+
+    assert tracker.update([], read, SAME) == []
+    assert tracker.update([], read, SAME) == []
+    assert tracker.update([], read, SAME) == ["Ad", "Kd"]
+
+
+def test_sitting_out_shows_no_cards():
+    read = _reader(None, None)
+    tracker = HeroCardTracker()
+
+    assert tracker.update([], read, SAME) == []
+    assert tracker.update(["3c", "6c", "6d"], read, SAME) == []
+
+
+def test_works_without_a_signature_by_falling_back_to_the_board():
+    # Older payloads carry no hero strip, so there is nothing to compare.
+    read = _reader(["Ad", "Kd"])
+    tracker = HeroCardTracker()
+
+    assert tracker.update([], read, None) == ["Ad", "Kd"]

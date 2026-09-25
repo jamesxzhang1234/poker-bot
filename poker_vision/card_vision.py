@@ -168,6 +168,25 @@ def _sample_center_color(card_crop):
     return patch.reshape(-1, 3).mean(axis=0)
 
 
+def sample_face_color(card_crop):
+    """Average colour of a fanned card's own face.
+
+    Samples the left portion rather than the centre. The hero's two cards
+    overlap, so the one behind has its middle covered by the one in front and
+    a centre sample averages the two together -- that read a 9 of spades as a
+    diamond, and read dimmed red queens as spades. The left edge is the part
+    of a fanned card that stays exposed.
+
+    Swept over all 122 hero cards in the real screenshots: 13 suits changed,
+    and every one checked by eye was a correction.
+    """
+    h, w = card_crop.shape[:2]
+    patch = card_crop[int(h * 0.35):int(h * 0.75), int(w * 0.05):int(w * 0.35)]
+    if patch.size == 0:
+        patch = card_crop
+    return patch.reshape(-1, 3).mean(axis=0)
+
+
 def parse_hero_card(card_crop):
     """Like parse_card, but for one of hero's own (fanned/rotated) cards --
     see HERO_CARDS. HERO_CARDS' boxes are deliberately generous (rotated
@@ -178,7 +197,7 @@ def parse_hero_card(card_crop):
     """
     if not is_card_present(card_crop):
         return None
-    suit = classify_suit(_sample_center_color(card_crop))
+    suit = classify_suit(sample_face_color(card_crop))
     rank = read_rank_from_top(card_crop)
     if rank is None:
         return None

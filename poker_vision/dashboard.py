@@ -99,9 +99,12 @@ def render(state, previous=None, frames=None, latency_ms=None, status=None):
         mark = "*" if moved else " "
         position = (seat.position or "--")
         hero = "<" if seat.is_hero else " "
+        cards = ""
+        if seat.hole_cards:
+            cards = "[" + " ".join(_format_card(c) for c in seat.hole_cards) + "] "
         lines.append(
             f"  {position:>5}{hero} {str(seat.name or '?'):<16}"
-            f"{_amount(seat.stack):>8} {mark}  {_action(seat)}")
+            f"{_amount(seat.stack):>8} {mark}  {cards}{_action(seat)}".rstrip())
 
     lines.append("  " + "-" * _WIDTH)
     footer = f"  frame {state.frame_index}"

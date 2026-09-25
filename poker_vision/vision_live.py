@@ -24,13 +24,14 @@ from pathlib import Path
 
 from collections import namedtuple
 
-from . import dashboard, regions, seat_anchors, vision_reader
+from . import dashboard, hero_cards, regions, seat_anchors, vision_reader
 from .table_state import is_plausible_table
 from .text_summary import format_summary
 
 HELPER = Path(__file__).resolve().parent.parent / "tools" / "ipad_capture" / "capture"
 
-Layout = namedtuple("Layout", "anchors board_slots rank_offset hero_cards")
+Layout = namedtuple("Layout",
+                    "anchors board_slots rank_offset hero_cards hero_card_slots")
 
 # Frame size -> that device's layout. Keyed on the captured resolution because
 # that is what identifies the device; a frame from anything not listed here is
@@ -41,7 +42,8 @@ _LAYOUT_BY_SIZE = {
         seat_anchors.IPAD_PORTRAIT,
         seat_anchors.IPAD_BOARD_SLOTS,
         seat_anchors.IPAD_RANK_OFFSET,
-        seat_anchors.IPAD_HERO_CARDS),
+        seat_anchors.IPAD_HERO_CARDS,
+        seat_anchors.IPAD_HERO_CARD_SLOTS),
     # The iPhone's board geometry already lives in regions.py, measured by
     # hand for the fixed-region parser; reuse it rather than keeping a second
     # copy that can drift. Its slots are at the reference resolution, which is
@@ -50,6 +52,7 @@ _LAYOUT_BY_SIZE = {
         seat_anchors.IPHONE_PORTRAIT,
         list(regions.BOARD_SLOTS),
         regions.RANK_OFFSET,
+        list(regions.HERO_CARDS),
         list(regions.HERO_CARDS)),
 }
 
@@ -65,7 +68,7 @@ def anchors_for(width, height):
     return layout.anchors if layout else None
 
 
-def iter_states(lines, anchors=None, on_error=None):
+def iter_states(lines, anchors=None, on_error=None, hero_tracker=None):
     """Yield a TableState for each usable payload line.
 
     A bad line is reported and skipped, never raised: a truncated or
@@ -99,11 +102,25 @@ def iter_states(lines, anchors=None, on_error=None):
                 on_error(f"plate matches no seat anchor: "
                          f"{plate.name!r} at ({plate.x},{plate.y})")
 
-        yield vision_reader.build_table_state(
+        state = vision_reader.build_table_state(
             line, chosen,
             board_slots=layout.board_slots if layout else None,
             rank_offset=layout.rank_offset if layout else None,
             hero_cards=layout.hero_cards if layout else None)
+
+        # Hole cards are read once a hand, at preflop, and held. See
+        # hero_cards.HeroCardTracker for why the holding is safe.
+        if hero_tracker is not None and layout is not None:
+            cards = hero_tracker.update(
+                state.board_cards,
+                read=lambda: vision_reader.read_hero_cards(
+                    frame, layout.hero_card_slots),
+                signature=vision_reader.hero_signature(frame))
+            for seat in state.seats:
+                if seat.is_hero:
+                    seat.hole_cards = list(cards)
+
+        yield state
 
 
 def run(lines, anchors=None, out=print, require_plausible=True):
@@ -272,7 +289,7 @@ def spawn_helper(helper=HELPER, fast=False, min_interval=0.0):
 
 
 def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
-                  on_state=None, status_of=None):
+                  on_state=None, status_of=None, hero_tracker=None):
     """Render each frame in place. Returns how many frames were drawn.
 
     Nothing in here is allowed to end the session. A bad line on stdout, a
@@ -281,7 +298,10 @@ def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
     """
     previous = None
     drawn = 0
-    for state in iter_states(lines, on_error=lambda m: None):
+    if hero_tracker is None:
+        hero_tracker = hero_cards.HeroCardTracker()
+    for state in iter_states(lines, on_error=lambda m: None,
+                             hero_tracker=hero_tracker):
         # Tabbing away from the app, or a full-screen modal, yields a frame
         # with no table in it. Hold the last real one rather than blanking the
         # display -- but redraw it marked HELD, so a stale table is never

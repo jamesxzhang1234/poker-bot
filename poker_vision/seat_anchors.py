@@ -82,3 +82,14 @@ IPAD_RANK_OFFSET = (8, 4, 70, 48)
 # A list of boxes, matching regions.HERO_CARDS on the iPhone side, so both
 # devices hand find_bets the same shape.
 IPAD_HERO_CARDS = [(940, 1850, 1180, 2070)]
+
+# The hero's two cards as separate slots, for reading them. Deliberately
+# generous and overlapping, the way regions.HERO_CARDS is on the iPhone: the
+# pair is fanned, so neither card sits at an exact fixed position and the left
+# one is partly behind the right. Chosen by testing three candidate pairs
+# against hands read off the screen by eye; this one got A-d K-d right on
+# every frame it appeared in.
+IPAD_HERO_CARD_SLOTS = [
+    (945, 1830, 1060, 2000),
+    (1055, 1840, 1175, 2020),
+]

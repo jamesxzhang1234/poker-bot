@@ -122,6 +122,7 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
 | `rank_templates.py` | Card ranks by template matching against stored exemplars (`data/rank_templates.npz`). Several exemplars per rank, because one set does **not** serve both devices. | board_reader |
 | `board_reader.py` | Reads the community board: rank from `rank_templates`, suit from `card_vision.classify_suit`. Has its own brightness-based card-presence test. | vision_reader |
 | `rank_templates.py` (see above) and the text mask together mean **three** readers share the frame: Vision for free-form text, template matching for card ranks, Tesseract for short stacks. Each is used where the others measurably fail. | | |
+| `hero_cards.py` | `HeroCardTracker` — reads the hero's hole cards once a hand at preflop and holds them. The only cross-frame memory in the pipeline; it reasons solely about whether a read is still valid, and blanks rather than risk showing a stale hand. | vision_live |
 | `dashboard.py` | Renders a `TableState` as a fixed block rewritten in place, `*` marking what moved and `[HELD]` marking a stale one. Pure: state in, string out. Holds the previous state **for display only** — that memory never reaches the parser. | vision_live |
 | `vision_live.py` | Live runner: spawns the capture helper, turns its JSON lines into `TableState`, prints `format_summary`. Picks the anchor set from the frame size and skips a size it doesn't know rather than guessing. **No work queue on purpose** — the helper spends ~90ms/frame and this side ~0.15ms, so the consumer cannot fall behind; frames are dropped in the helper, where the diff gate lives. | — |
 | `tools/ipad_capture/capture.swift` | Swift helper: sets the CoreMediaIO flag, opens the USB iOS device, runs one `VNRecognizeTextRequest` per frame, emits JSON lines. `--dir` replays saved frames, `--live` captures. | — |
@@ -203,6 +204,28 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   an empty gap instead of on top of the data. Before/after sweep: 163
   backgrounds, 8 changed, all `d`->`s`, all the same navy card across
   consecutive frames of one hand, zero changes on the iPhone.
+
+- **Hero hole cards: read at preflop, held, invalidated on appearance.** The
+  fanned pair costs ~114ms to read and changes once a hand. An empty board is
+  permission to read; a frame-to-frame jump in the hero region is what
+  invalidates the held answer. Both conditions are needed and neither alone
+  works. Board-only was tried: during a run-it-once showdown the board renders
+  elsewhere, the fixed slots read a gap and return `[]`, and that false
+  preflop triggered a mid-hand re-read that captured the wrong cards and held
+  them all hand. Comparing the region against its signature *at read time* was
+  also tried: the region drifts slowly as the bet slider and glow come and go,
+  and the drift accumulated past the threshold and blanked cards that were
+  still valid. Frame-to-frame is right because a deal is a sudden jump
+  (measured 9471-9772) while animation is not (4-468). When the preflop frame
+  is missed entirely, it shows **nothing** rather than the previous hand --
+  blank is a failure you notice, wrong hole cards are not.
+
+- **A fanned card's suit comes from its left edge, not its centre.** The two
+  hero cards overlap, so the one behind has its middle covered by the one in
+  front and a centre sample averages the two: it called a 9 of spades a
+  diamond, and called dimmed red queens spades. Swept over all 122 hero cards
+  in the real screenshots, 13 suits changed and every one checked by eye was a
+  correction.
 
 - **The pot is cumulative across streets; the chips on the felt are only the
   current one.** They match pre-flop and diverge from the flop on, so "bets

@@ -836,3 +836,79 @@ def test_a_hero_hole_card_rank_is_not_read_as_a_bet():
         hero_cards=seat_anchors.IPAD_HERO_CARDS)
 
     assert bets == {}
+
+
+def test_payload_carries_a_decoded_hero_strip():
+    import base64, json
+    import cv2
+    import numpy as np
+    strip = np.full((300, 400, 3), 30, dtype=np.uint8)
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "hero_strip": base64.b64encode(cv2.imencode(".png", strip)[1].tobytes()).decode(),
+        "hero_strip_rect": [0.55, 0.74, 0.30, 0.15],
+        "observations": [],
+    })
+
+    frame = vision_reader.parse_payload(payload)
+
+    assert frame.hero_strip is not None
+    assert frame.hero_strip.shape == (300, 400, 3)
+    assert frame.hero_strip_rect == (0.55, 0.74, 0.30, 0.15)
+
+
+def test_reading_hero_cards_with_no_strip_returns_nothing():
+    import json
+    from poker_vision import seat_anchors
+    frame = vision_reader.parse_payload(json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "observations": []}))
+
+    assert vision_reader.read_hero_cards(
+        frame, seat_anchors.IPAD_HERO_CARD_SLOTS) == []
+
+
+def test_reads_hero_cards_out_of_the_strip():
+    import base64, json
+    import cv2
+    import numpy as np
+    from poker_vision import rank_templates, seat_anchors
+
+    # Draw two cards into the real hero slots on a frame-sized canvas, then
+    # hand over only the cropped strip -- what the helper actually sends.
+    # A real card is a coloured face with a border, a rank glyph and a large
+    # suit pip. is_card_present keys on edge density, and a card drawn with
+    # just a letter on a flat rectangle falls under the threshold -- the
+    # fixture has to look like a card, not merely be one.
+    frame_img = np.full((2360, 1640, 3), 25, dtype=np.uint8)
+    for (x1, y1, x2, y2), (rank, bgr) in zip(
+            seat_anchors.IPAD_HERO_CARD_SLOTS,
+            [("A", (160, 60, 40)), ("K", (40, 40, 160))]):
+        frame_img[y1:y2, x1:x2] = bgr
+        # Real harvested glyphs, not a drawing font: OpenCV's Hershey "K"
+        # reads as a 4, which is a property of that font and nothing to do
+        # with the code under test.
+        glyph = cv2.resize(rank_templates.load()[rank][0], (52, 66),
+                           interpolation=cv2.INTER_NEAREST)
+        target = frame_img[y1 + 14:y1 + 80, x1 + 16:x1 + 68]
+        target[glyph > 127] = (255, 255, 255)
+        cv2.circle(frame_img, ((x1 + x2) // 2, y2 - 55), 44, (255, 255, 255), -1)
+        # Detail below the rank, not around it: read_rank_from_top crops the
+        # upper part of the card, so a full border reads as part of the glyph
+        # and turned the A into a T.
+        cv2.rectangle(frame_img, (x1 + 4, y1 + (y2 - y1) // 2), (x2 - 5, y2 - 4),
+                      (245, 245, 245), 3)
+
+    rect = (0.55, 0.74, 0.30, 0.15)
+    sx, sy = int(rect[0] * 1640), int(rect[1] * 2360)
+    strip = frame_img[sy:sy + int(rect[3] * 2360), sx:sx + int(rect[2] * 1640)]
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "hero_strip": base64.b64encode(cv2.imencode(".png", strip)[1].tobytes()).decode(),
+        "hero_strip_rect": list(rect), "observations": [],
+    })
+
+    cards = vision_reader.read_hero_cards(
+        vision_reader.parse_payload(payload), seat_anchors.IPAD_HERO_CARD_SLOTS)
+
+    assert cards == ["Ad", "Kh"]

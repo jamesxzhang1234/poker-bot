@@ -181,3 +181,20 @@ def test_waiting_panel_explains_the_setup_when_not_yet_connected():
     out = render_waiting("waiting: no iOS device attached over USB")
 
     assert "unlock" in out.lower()
+
+
+def test_the_hero_line_shows_your_hole_cards():
+    seats = [Seat(seat_id="hero", name="jxz", stack=9.9, position="SB",
+                  is_hero=True, hole_cards=["Ad", "Kd"])]
+
+    line = [l for l in render(_state(seats)).splitlines() if "jxz" in l][0]
+
+    assert "A♦ K♦" in line
+
+
+def test_a_seat_with_no_known_cards_shows_none():
+    seats = [Seat(seat_id="hero", name="jxz", stack=9.9, position="SB", is_hero=True)]
+
+    line = [l for l in render(_state(seats)).splitlines() if "jxz" in l][0]
+
+    assert "♦" not in line and "[" not in line

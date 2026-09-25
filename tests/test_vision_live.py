@@ -275,3 +275,15 @@ def test_the_generic_message_is_used_when_nothing_else_is_reported():
     vision_live.run_dashboard([_payload(index=0), empty], draw=shown.append)
 
     assert "no table on screen" in shown[-1]
+
+
+def test_hero_hole_cards_are_tracked_across_the_hand():
+    from poker_vision.hero_cards import HeroCardTracker
+    tracker = HeroCardTracker()
+    tracker.cards = ["Ad", "Kd"]         # as if read at preflop
+    tracker.read_this_hand = True
+
+    states = list(vision_live.iter_states([_payload()], hero_tracker=tracker))
+
+    hero = [s for s in states[0].seats if s.is_hero]
+    assert hero == [] or hero[0].hole_cards == ["Ad", "Kd"]

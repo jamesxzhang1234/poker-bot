@@ -34,3 +34,23 @@ def test_the_brightest_ipad_spade_is_still_a_spade():
 def test_the_dimmest_non_spade_is_not_a_spade():
     # Dimmest real club measured max-channel 110.
     assert card_vision.classify_suit((44, 110, 22)) == "c"
+
+
+def test_a_fanned_cards_suit_comes_from_its_exposed_edge():
+    # The hero's two cards overlap, so the card behind has its centre covered
+    # by the card in front. Sampling the centre picked up the neighbour and
+    # called a 9 of spades a diamond; the exposed left edge is still its own
+    # face. Colours here are real measurements from frames/ipad/ipad_000.png.
+    import numpy as np
+    card = np.zeros((170, 115, 3), dtype=np.uint8)
+    card[:, :] = (116, 100, 95)           # centre: washed out by the card in front
+    card[55:130, 5:40] = (54, 40, 37)     # exposed left edge: navy
+
+    assert card_vision.classify_suit(card_vision.sample_face_color(card)) == "s"
+
+
+def test_an_unobstructed_card_reads_the_same_either_way():
+    import numpy as np
+    card = np.full((170, 115, 3), (160, 60, 40), dtype=np.uint8)   # blue: diamonds
+
+    assert card_vision.classify_suit(card_vision.sample_face_color(card)) == "d"

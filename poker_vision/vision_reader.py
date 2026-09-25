@@ -17,7 +17,7 @@ from typing import List
 import cv2
 import numpy as np
 
-from . import board_reader, number_ocr, parser, seat_anchors
+from . import board_reader, card_vision, number_ocr, parser, seat_anchors
 from .table_state import Seat, TableState
 
 
@@ -55,6 +55,11 @@ class VisionFrame:
     # than the board strip while covering the whole frame -- and it is what
     # lets a stack Vision failed to detect be re-read from pixels.
     text_mask: "np.ndarray" = None
+    # The hero's own cards as pixels. Separate from the board strip because
+    # they sit at the bottom of the screen, nowhere near the board band, and
+    # separate from the text mask because suit is a colour the mask discards.
+    hero_strip: "np.ndarray" = None
+    hero_strip_rect: tuple = None
 
 
 def parse_payload(payload):
@@ -74,7 +79,16 @@ def parse_payload(payload):
         buffer = np.frombuffer(base64.b64decode(encoded_mask), dtype=np.uint8)
         text_mask = cv2.imdecode(buffer, cv2.IMREAD_GRAYSCALE)
 
+    hero = None
+    encoded_hero = data.get("hero_strip")
+    if encoded_hero:
+        buffer = np.frombuffer(base64.b64decode(encoded_hero), dtype=np.uint8)
+        hero = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+    hero_rect = data.get("hero_strip_rect")
+
     return VisionFrame(
+        hero_strip=hero,
+        hero_strip_rect=tuple(hero_rect) if hero_rect else None,
         text_mask=text_mask,
         board_strip=strip,
         board_strip_rect=tuple(rect) if rect else None,
@@ -701,3 +715,44 @@ def slots_in_strip(slots, rect, frame_size, strip_size):
          round((x2 - origin_x) * scale_x), round((y2 - origin_y) * scale_y))
         for x1, y1, x2, y2 in slots
     ]
+
+
+def read_hero_cards(frame, hero_slots):
+    """The hero's two hole cards, read from the attached strip.
+
+    Uses card_vision.parse_hero_card unchanged: the pair is fanned, so neither
+    card sits at a fixed offset and the rank has to be hunted for -- that
+    reader was written for exactly this and is already proven on real hands.
+    """
+    if frame.hero_strip is None or frame.hero_strip_rect is None or not hero_slots:
+        return []
+    strip = frame.hero_strip
+    local = slots_in_strip(hero_slots, frame.hero_strip_rect,
+                           frame_size=(frame.width, frame.height),
+                           strip_size=(strip.shape[1], strip.shape[0]))
+    cards = []
+    for x1, y1, x2, y2 in local:
+        x1, y1 = max(x1, 0), max(y1, 0)
+        x2 = min(x2, strip.shape[1])
+        y2 = min(y2, strip.shape[0])
+        if x2 <= x1 or y2 <= y1:
+            continue
+        card = card_vision.parse_hero_card(strip[y1:y2, x1:x2])
+        if card:
+            cards.append(card)
+    return cards
+
+
+def hero_signature(frame):
+    """A coarse thumbnail of the hero card region, for change detection.
+
+    16x16 grey, the same shape of signal the capture helper uses for its own
+    diff gate. Coarse on purpose: it must ignore glow, buttons and animation
+    while still separating a new deal, and measured on real frames those sit
+    an order of magnitude apart.
+    """
+    if frame.hero_strip is None:
+        return None
+    small = cv2.resize(cv2.cvtColor(frame.hero_strip, cv2.COLOR_BGR2GRAY),
+                       (16, 16), interpolation=cv2.INTER_AREA)
+    return small.flatten().tolist()
