@@ -68,6 +68,10 @@ tools/ipad_capture/capture --live                     # stream JSON lines from t
 tools/ipad_capture/capture --dir frames/ipad          # replay saved frames (backtests, calibration)
 tools/ipad_capture/capture --dir frames/ipad --fast   # .fast recognition: ~14ms vs ~90ms, fewer detections
 
+python -m poker_vision.vision_live                    # live: spawn the helper, print table state per frame
+python -m poker_vision.vision_live --min-interval 0.5 # throttle; --fast for .fast recognition
+tools/ipad_capture/capture --dir frames/ipad | python -m poker_vision.vision_live --stdin   # replay
+
 python tools/region_preview.py <frame.png> <out.png>   # draw regions.py boxes over a frame to check calibration
 python tools/grid_overlay.py ...                       # pixel grid for measuring new boxes
 ```
@@ -111,7 +115,8 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
 | `server.py` | Flask upload endpoint + background worker thread, joined only by a `queue.Queue` of file paths. | — |
 | `main.py` | Offline CLI over image/video files. | — |
 | `vision_reader.py` | **The Vision path.** Turns the capture helper's JSON (recognised text + pixel positions) into a `TableState`: `parse_payload`, `parse_amount`, `find_seat_plates`, `find_pot`, `assign_to_seats`, `build_table_state`. Locates text by recognition, then assigns it to a seat by proximity — no per-field boxes. | — (server/main not yet wired) |
-| `seat_anchors.py` | One (x, y) anchor per seat, per device: `IPAD_PORTRAIT`, `IPHONE_PORTRAIT`. Derived by clustering real frames, not hand-measured. | vision_reader |
+| `seat_anchors.py` | One (x, y) anchor per seat, per device: `IPAD_PORTRAIT`, `IPHONE_PORTRAIT`. Derived by clustering real frames, not hand-measured. | vision_reader, vision_live |
+| `vision_live.py` | Live runner: spawns the capture helper, turns its JSON lines into `TableState`, prints `format_summary`. Picks the anchor set from the frame size and skips a size it doesn't know rather than guessing. **No work queue on purpose** — the helper spends ~90ms/frame and this side ~0.15ms, so the consumer cannot fall behind; frames are dropped in the helper, where the diff gate lives. | — |
 | `tools/ipad_capture/capture.swift` | Swift helper: sets the CoreMediaIO flag, opens the USB iOS device, runs one `VNRecognizeTextRequest` per frame, emits JSON lines. `--dir` replays saved frames, `--live` captures. | — |
 | `overlay.py` | **Dead code.** Nothing imports it (leftover from the deleted cv2-window UI). Safe to delete. | — |
 
@@ -160,6 +165,12 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   out per call, and on a 10x10 blank image that round trip costs 49.9ms
   against ~6ms of actual recognition — 129 calls per frame meant ~6.4s of pure
   process overhead.
+
+- **A live stdout stream must be line-buffered.** `vision_live` reconfigures
+  stdout on startup: Python block-buffers when stdout is a pipe or file, so
+  without it every captured frame sat unflushed and was lost when the process
+  was killed -- the runner looked like it was capturing nothing while the
+  helper was reporting frames fine.
 
 - **Don't zip capture-helper payloads against a directory listing by
   position.** The helper skips any frame it cannot decode, so line N stops

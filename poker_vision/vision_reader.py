@@ -240,16 +240,19 @@ def build_table_state(payload, anchors):
     frame = parse_payload(payload)
     plates = find_seat_plates(frame.observations, frame.width, frame.height)
     assigned = assign_to_seats(plates, anchors, frame.width, frame.height)
+    statuses = find_statuses(frame.observations, frame.width, frame.height)
 
-    seats = [
-        Seat(
+    seats = []
+    for seat_id, plate in sorted(assigned.items()):
+        status = statuses.get((plate.name, plate.x, plate.y))
+        seats.append(Seat(
             seat_id=seat_id,
             name=plate.name,
             stack=plate.stack,
+            status=status,
+            in_hand=is_in_hand(status),
             is_hero=(seat_id == seat_anchors.HERO_SEAT_ID),
-        )
-        for seat_id, plate in sorted(assigned.items())
-    ]
+        ))
     return TableState(
         frame_index=frame.frame_index,
         timestamp_sec=frame.timestamp_sec,
@@ -257,3 +260,73 @@ def build_table_state(payload, anchors):
         board_cards=[],
         pot=find_pot(frame.observations, frame.width, frame.height),
     )
+
+
+# Status text the UI renders near a seat. Two kinds, and the distinction is
+# what tells you whether a player is still in the hand: a persistent label
+# ("Folded", "Sitting Out", "All In") states a condition, while an action
+# bubble ("Check", "Call", ...) reports the move they just made -- which only
+# happens if they are still playing.
+_PERSISTENT_STATUS = {"folded", "sitting out", "all in"}
+_ACTION_STATUS = {"check", "call", "raise", "bet", "fold"}
+_STATUS_WORDS = _PERSISTENT_STATUS | _ACTION_STATUS
+
+# Vision reports whatever casing it read -- real frames produced both "Folded"
+# and "folded" -- so statuses are reported in one canonical spelling and a
+# consumer can compare them directly.
+_CANONICAL_STATUS = {w: w.title() for w in _STATUS_WORDS}
+_CANONICAL_STATUS["all in"] = "All In"
+
+# How far above its plate a status can sit, as a fraction of frame height.
+# Measured on both devices: the persistent label lands at 2.7-2.9% and the
+# action bubble at 9.1-9.3% -- the same proportions on the iPad's 2360-high
+# frame and the iPhone's 2622, which is why one band covers both. The lower
+# bound also excludes the hero's action buttons along the bottom of the
+# screen, which sit *below* every plate and otherwise read as a status.
+_STATUS_DY_MIN = 0.025
+_STATUS_DY_MAX = 0.098
+_STATUS_DX_TOL = 0.070   # fraction of frame width
+
+
+def find_statuses(observations, width, height):
+    """Map each status label onto the seat plate it belongs to.
+
+    Returns {(name, x, y): status} keyed by the plate's identity, so the
+    caller can match it back to whichever seat that plate was assigned.
+    """
+    plates = find_seat_plates(observations, width, height)
+    dy_min, dy_max = _STATUS_DY_MIN * height, _STATUS_DY_MAX * height
+    dx_tol = _STATUS_DX_TOL * width
+
+    out = {}
+    for o in observations:
+        if o.confidence < _MIN_CONFIDENCE:
+            continue
+        word = o.text.strip().lower()
+        if word not in _STATUS_WORDS:
+            continue
+        below = [
+            p for p in plates
+            if dy_min <= (p.y - o.y) <= dy_max and abs(p.x - o.x) <= dx_tol
+        ]
+        if not below:
+            continue
+        plate = min(below, key=lambda p: p.y - o.y)
+        out[(plate.name, plate.x, plate.y)] = _CANONICAL_STATUS[word]
+    return out
+
+
+def is_in_hand(status):
+    """Whether a seat showing `status` is still contesting the pot.
+
+    An action bubble means they acted and are still in; "Folded" and the other
+    persistent labels mean they are not. Unknown status is not evidence either
+    way, so it reports False rather than guessing -- the same conservatism
+    parser._is_occupied applies to seat occupancy.
+    """
+    if status is None:
+        return False
+    word = status.strip().lower()
+    if word in _PERSISTENT_STATUS:
+        return False
+    return word in _ACTION_STATUS

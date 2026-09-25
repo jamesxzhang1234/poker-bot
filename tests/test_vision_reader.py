@@ -268,3 +268,89 @@ def test_source_is_none_for_a_live_payload():
     })
 
     assert vision_reader.parse_payload(payload).source is None
+
+
+def test_assigns_a_persistent_status_label_to_the_seat_below_it():
+    # "Folded" renders just above the plate: 65-69px on the iPad's 2360-high
+    # frame, 70-76px on the iPhone's 2622 -- 2.7-2.9% of frame height on both.
+    obs = [_obs("Folded", 404, 828), _obs("Jaimie73", 404, 895), _obs("9.45", 404, 951)]
+
+    statuses = vision_reader.find_statuses(obs, width=1640, height=2360)
+
+    assert statuses == {("Jaimie73", 404, 895): "Folded"}
+
+
+def test_assigns_an_action_bubble_to_the_seat_below_it():
+    # The action bubble floats higher than the persistent label -- ~216px on
+    # the iPad, ~240px on the iPhone, i.e. 9.1-9.3% of height on both.
+    obs = [_obs("Call", 440, 679), _obs("Jaimie73", 404, 895), _obs("9.45", 404, 951)]
+
+    statuses = vision_reader.find_statuses(obs, width=1640, height=2360)
+
+    assert statuses == {("Jaimie73", 404, 895): "Call"}
+
+
+def test_does_not_assign_the_bottom_action_buttons_to_a_seat():
+    # "Fold"/"Check"/"Bet" also label the hero's buttons along the bottom of
+    # the screen. Those sit BELOW every plate, so requiring the status to be
+    # above its seat is what keeps them out.
+    obs = [_obs("jxz", 814, 1920), _obs("27.8", 820, 1980), _obs("Fold", 289, 2258)]
+
+    assert vision_reader.find_statuses(obs, width=1640, height=2360) == {}
+
+
+def test_does_not_reach_across_to_a_horizontally_distant_seat():
+    # A status on the left must not attach to a plate on the right that
+    # happens to sit at the right height.
+    obs = [_obs("Folded", 401, 828), _obs("kidpokers", 1233, 897), _obs("20", 1231, 951)]
+
+    assert vision_reader.find_statuses(obs, width=1640, height=2360) == {}
+
+
+def test_table_state_carries_seat_status():
+    import json
+    from poker_vision import seat_anchors
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "observations": [
+            {"text": "Folded", "x": 404, "y": 828, "w": 90, "h": 28, "confidence": 1.0},
+            {"text": "Jaimie73", "x": 404, "y": 895, "w": 130, "h": 30, "confidence": 1.0},
+            {"text": "9.45", "x": 404, "y": 951, "w": 75, "h": 30, "confidence": 1.0},
+        ],
+    })
+
+    state = vision_reader.build_table_state(payload, seat_anchors.IPAD_PORTRAIT)
+
+    seat = [s for s in state.seats if s.seat_id == "mid_left"][0]
+    assert seat.status == "Folded"
+    assert seat.in_hand is False
+
+
+def test_a_seat_with_an_action_bubble_is_still_in_the_hand():
+    import json
+    from poker_vision import seat_anchors
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "observations": [
+            {"text": "Call", "x": 440, "y": 679, "w": 70, "h": 28, "confidence": 1.0},
+            {"text": "Jaimie73", "x": 404, "y": 895, "w": 130, "h": 30, "confidence": 1.0},
+            {"text": "9.45", "x": 404, "y": 951, "w": 75, "h": 30, "confidence": 1.0},
+        ],
+    })
+
+    state = vision_reader.build_table_state(payload, seat_anchors.IPAD_PORTRAIT)
+
+    seat = [s for s in state.seats if s.seat_id == "mid_left"][0]
+    assert seat.status == "Call"
+    assert seat.in_hand is True
+
+
+def test_status_is_normalised_to_a_canonical_spelling():
+    # Vision returns whatever casing it read -- on real frames it produced
+    # both "Folded" and "folded". A consumer comparing status == "Folded"
+    # would silently miss the second, so the reader settles on one spelling.
+    obs = [_obs("folded", 404, 828), _obs("Jaimie73", 404, 895), _obs("9.45", 404, 951)]
+
+    statuses = vision_reader.find_statuses(obs, width=1640, height=2360)
+
+    assert statuses == {("Jaimie73", 404, 895): "Folded"}
