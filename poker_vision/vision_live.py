@@ -160,7 +160,7 @@ def main():
     # device", "lost the device" -- and those are the messages that tell the
     # user what to fix. Show them in the waiting panel rather than letting
     # them scroll past behind the dashboard.
-    state = {"status": None, "frames": 0, "last": None}
+    state = {"status": None, "frames": 0, "last": None, "fault": None}
     lock = threading.Lock()
 
     def watch_stderr():
@@ -170,6 +170,8 @@ def main():
                 continue
             with lock:
                 state["status"] = message
+                # "capturing: <device>" is progress, not a fault.
+                state["fault"] = None if message.startswith("capturing:") else message
                 if args.text:
                     print(f"[{message}]", file=sys.stderr)
                 elif state["last"] is None:
@@ -198,12 +200,18 @@ def main():
     def remember(table):
         with lock:
             state["last"] = table
+            state["fault"] = None
+
+    def current_fault():
+        with lock:
+            return state.get("fault")
 
     try:
         if args.text:
             run(proc.stdout, require_plausible=not args.all_frames)
         else:
-            run_dashboard(proc.stdout, draw=draw, on_state=remember)
+            run_dashboard(proc.stdout, draw=draw, on_state=remember,
+                          status_of=current_fault)
     except KeyboardInterrupt:
         pass
     except Exception as exc:                # never end on a traceback
@@ -264,7 +272,7 @@ def spawn_helper(helper=HELPER, fast=False, min_interval=0.0):
 
 
 def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
-                  on_state=None):
+                  on_state=None, status_of=None):
     """Render each frame in place. Returns how many frames were drawn.
 
     Nothing in here is allowed to end the session. A bad line on stdout, a
@@ -280,9 +288,14 @@ def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
         # mistaken for a live one.
         if not state.seats:
             if previous is not None:
+                # A fault the helper has reported outranks this. Locking the
+                # iPad shows the lock screen for one frame and then goes
+                # silent, and "no table on screen" would otherwise bury
+                # "unlock the iPad screen" for the rest of the lock.
+                reported = status_of() if status_of else None
                 try:
                     draw(dashboard.render(previous, frames=drawn,
-                                          status="no table on screen"))
+                                          status=reported or "no table on screen"))
                 except Exception:
                     pass
             continue

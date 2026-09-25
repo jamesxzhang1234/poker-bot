@@ -250,3 +250,28 @@ def test_a_frame_with_no_table_redraws_the_held_one_with_a_note():
     assert len(shown) == 2          # redrawn, not skipped silently
     assert "drake81" in shown[-1]   # still the last real table
     assert "held" in shown[-1].lower()
+
+
+def test_a_reported_fault_outranks_the_generic_no_table_message():
+    # Locking shows the lock screen for one frame -- a real frame with no
+    # table -- and then frames stop. Without a priority the "no table on
+    # screen" from that single frame overwrites "unlock the iPad screen",
+    # replacing the actionable reason with a vague one for the whole lock.
+    empty = json.dumps({"frame_index": 1, "timestamp_sec": 0.0,
+                        "width": 1640, "height": 2360, "observations": []})
+    shown = []
+
+    vision_live.run_dashboard([_payload(index=0), empty], draw=shown.append,
+                              status_of=lambda: "no frames arriving -- unlock the iPad screen")
+
+    assert "unlock the iPad screen" in shown[-1]
+
+
+def test_the_generic_message_is_used_when_nothing_else_is_reported():
+    empty = json.dumps({"frame_index": 1, "timestamp_sec": 0.0,
+                        "width": 1640, "height": 2360, "observations": []})
+    shown = []
+
+    vision_live.run_dashboard([_payload(index=0), empty], draw=shown.append)
+
+    assert "no table on screen" in shown[-1]
