@@ -260,15 +260,24 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   different fraction of each one's width, while the diagonal fraction agrees
   (8.7-9.8%).
 
-- **A locked device sends no frames at all — it does not send non-table
-  frames.** iOS drops the iPad to a USB configuration with no capture
-  interface, so the device disappears from AVFoundation entirely. That
-  matters for the display: the reader blocks on a line that never comes and
-  the last table sits there looking live. Three states, and they need
-  different words: no device (unlock it / quit QuickTime), connected but no
-  table on screen (you are in the lobby — nothing is wrong), and a table that
-  has stopped updating (marked `[HELD]` with the reason). A frozen table that
-  looks live is the only failure here that could actually be acted on.
+- **A locked device stays open and goes quiet; it does not disappear.**
+  Tested by locking the iPad with capture running: USB configuration stays at
+  6, the `Valeria` interface is still there, `AVCaptureSession` opens happily
+  and reports "capturing" — and then delivers **zero** sample buffers. So a
+  device-presence check never fires, which is why detection is a **frame
+  watchdog**: an open session that has delivered nothing for 5s reports "no
+  frames arriving -- unlock the iPad screen". Arrival is tracked *before* the
+  content-diff gate, because that gate legitimately suppresses emission on a
+  static table and starvation must not be confused with stillness.
+  (An earlier note here claimed locking drops the device to configuration 5
+  with no capture interface. That was wrong — config 5 was observed in some
+  other state, probably before the device was unlocked at all.)
+
+  Three display states follow, and they need different words: no frames /
+  no device (unlock it, quit QuickTime), connected but no table on screen
+  (you are in the lobby — nothing is wrong), and a table that has stopped
+  updating (marked `[HELD]` with the reason). A frozen table that looks live
+  is the only failure here that could actually be acted on.
 
 - **Live capture supervises itself; it does not start once and hope.** The
   capture interface vanishes the instant the device locks -- iOS drops it back

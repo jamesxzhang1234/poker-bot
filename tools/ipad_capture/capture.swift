@@ -195,6 +195,11 @@ final class LiveCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
     let minInterval: Double
     var index = 0
     var lastEmit = Date.distantPast
+    // When the iPad's screen locks, the device stays open and discoverable --
+    // it simply stops delivering sample buffers. Tracked on ARRIVAL, before
+    // any gating, because the content-diff gate legitimately suppresses
+    // emission on a static table and that must not look like starvation.
+    var lastSample = Date.distantPast
     var lastSignature: [UInt8] = []
     let ctx = CIContext()
 
@@ -222,6 +227,7 @@ final class LiveCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
 
     func captureOutput(_ o: AVCaptureOutput, didOutput sb: CMSampleBuffer,
                        from c: AVCaptureConnection) {
+        lastSample = Date()
         guard Date().timeIntervalSince(lastEmit) >= minInterval,
               let px = CMSampleBufferGetImageBuffer(sb) else { return }
         let ci = CIImage(cvPixelBuffer: px)
@@ -270,6 +276,10 @@ func note(_ message: String) {
 /// startRunning() dies silently the first time the screen sleeps mid-session.
 /// This polls instead: acquire when the device is there, notice when it goes,
 /// and pick it up again when it returns.
+// How long an open session may deliver nothing before we say so. Long enough
+// not to trip on a brief stall, short enough to notice before a hand is over.
+let STARVED_AFTER: TimeInterval = 5.0
+
 final class Supervisor {
     let fast: Bool
     let minInterval: Double
@@ -327,7 +337,16 @@ final class Supervisor {
     func tick() {
         let device = findDevice()
         if session != nil {
-            if device == nil { stop("locked, unplugged, or taken by another app") }
+            if device == nil { stop("unplugged, or taken by another app") }
+            else if let g = grabber,
+                    Date().timeIntervalSince(g.lastSample) > STARVED_AFTER {
+                // Open, present, and sending nothing. A locked screen looks
+                // exactly like this: the device never disappears, it just
+                // goes quiet.
+                complain("no frames arriving -- unlock the iPad screen")
+            } else if grabber?.lastSample != Date.distantPast {
+                lastComplaint = ""
+            }
             return
         }
         guard let device = device else {
