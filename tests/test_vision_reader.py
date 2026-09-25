@@ -958,9 +958,39 @@ def test_no_thumbnail_means_unknown_rather_than_folded():
 def test_it_is_your_turn_when_the_real_action_buttons_show():
     obs = [_obs("Fold", 289, 2258), _obs("Check", 818, 2260), _obs("Bet", 1348, 2258)]
 
+    assert vision_reader.find_action(obs, width=1640, height=2360).your_turn is True
+
+
+def test_a_check_button_means_a_call_costs_nothing():
+    # to_call reported None both when the amount could not be read and when
+    # checking was free. Those are opposite situations for anything deciding
+    # what to do -- one is "I cannot see the price", the other is "the next
+    # card is free" -- and on a live corpus 7 of the 31 frames where it was
+    # the hero's turn were free checks reported as unknown.
+    obs = [_obs("Fold", 289, 2258), _obs("Check", 818, 2260), _obs("Bet", 1348, 2258)]
+
+    assert vision_reader.find_action(obs, width=1640, height=2360).to_call == 0.0
+
+
+def test_an_unread_button_row_still_leaves_what_you_owe_unknown():
+    # The counterpart to the test above: no Check and no Call amount means
+    # the price is genuinely unknown, which must not collapse to zero.
+    obs = [_obs("Fold", 289, 2258), _obs("Raise", 1348, 2258)]
+
     action = vision_reader.find_action(obs, width=1640, height=2360)
 
     assert action.your_turn is True
+    assert action.to_call is None
+
+
+def test_waiting_for_your_turn_owes_nothing_known():
+    # A pre-action "Check / Fold" box is not the Check button, so it must not
+    # be read as a free check.
+    obs = [_obs("Check / Fold", 289, 2257), _obs("Call any", 823, 2258)]
+
+    action = vision_reader.find_action(obs, width=1640, height=2360)
+
+    assert action.your_turn is False
     assert action.to_call is None
 
 

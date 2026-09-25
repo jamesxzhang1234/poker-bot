@@ -832,7 +832,12 @@ _CALL_AMOUNT = re.compile(r"(?i)^call\s+([\d.]+)$")
 
 @dataclass
 class ActionState:
-    """Whether it is the hero's turn, and what a call costs."""
+    """Whether it is the hero's turn, and what a call costs.
+
+    `to_call` is 0.0 when checking is free and None when the price could not
+    be read at all. Those are different answers and a decision needs to tell
+    them apart.
+    """
     your_turn: bool = False
     to_call: float = None
 
@@ -858,6 +863,14 @@ def find_action(observations, width, height):
         if match:
             to_call = parse_amount(match.group(1))
             break
+
+    # A Check button means there is no outstanding bet, so a call costs
+    # nothing. That has to be reported as 0 rather than left None: None is
+    # "the price could not be read", and confusing the two makes a free card
+    # look like a decision that cannot be taken. The client offers Check or
+    # Call, never both, so an explicit amount always wins.
+    if to_call is None and "check" in lowered:
+        to_call = 0.0
 
     acting = any(t in _ACTION for t in lowered) or to_call is not None
     return ActionState(your_turn=acting, to_call=to_call)
