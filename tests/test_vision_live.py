@@ -236,3 +236,17 @@ def test_dashboard_keeps_the_last_table_when_the_screen_is_not_a_table():
 
     assert n == 1
     assert "drake81" in shown[-1]
+
+
+def test_a_frame_with_no_table_redraws_the_held_one_with_a_note():
+    # Tabbing away holds the last table -- but it must say it is held, not sit
+    # there looking like live data.
+    empty = json.dumps({"frame_index": 1, "timestamp_sec": 0.0,
+                        "width": 1640, "height": 2360, "observations": []})
+    shown = []
+
+    vision_live.run_dashboard([_payload(index=0), empty], draw=shown.append)
+
+    assert len(shown) == 2          # redrawn, not skipped silently
+    assert "drake81" in shown[-1]   # still the last real table
+    assert "held" in shown[-1].lower()

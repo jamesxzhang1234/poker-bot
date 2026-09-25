@@ -160,7 +160,7 @@ def main():
     # device", "lost the device" -- and those are the messages that tell the
     # user what to fix. Show them in the waiting panel rather than letting
     # them scroll past behind the dashboard.
-    state = {"status": None, "frames": 0}
+    state = {"status": None, "frames": 0, "last": None}
     lock = threading.Lock()
 
     def watch_stderr():
@@ -170,10 +170,20 @@ def main():
                 continue
             with lock:
                 state["status"] = message
-                if state["frames"] == 0 and not args.text:
-                    dashboard.draw_to_terminal(dashboard.render_waiting(message))
-                elif args.text:
+                if args.text:
                     print(f"[{message}]", file=sys.stderr)
+                elif state["last"] is None:
+                    # "capturing: <device>" means the feed is up and we are
+                    # simply not looking at a table yet -- the lobby, say.
+                    dashboard.draw_to_terminal(dashboard.render_waiting(
+                        message, connected=message.startswith("capturing:")))
+                else:
+                    # Frames have stopped arriving -- when the iPad locks none
+                    # come at all -- so the table on screen is stale. Redraw it
+                    # marked HELD rather than leaving it looking live.
+                    dashboard.draw_to_terminal(
+                        dashboard.render(state["last"], frames=state["frames"],
+                                         status=message))
 
     threading.Thread(target=watch_stderr, daemon=True).start()
 
@@ -185,11 +195,15 @@ def main():
             state["frames"] += 1
             dashboard.draw_to_terminal(text)
 
+    def remember(table):
+        with lock:
+            state["last"] = table
+
     try:
         if args.text:
             run(proc.stdout, require_plausible=not args.all_frames)
         else:
-            run_dashboard(proc.stdout, draw=draw)
+            run_dashboard(proc.stdout, draw=draw, on_state=remember)
     except KeyboardInterrupt:
         pass
     except Exception as exc:                # never end on a traceback
@@ -249,7 +263,8 @@ def spawn_helper(helper=HELPER, fast=False, min_interval=0.0):
                             text=True, bufsize=1)
 
 
-def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None):
+def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
+                  on_state=None):
     """Render each frame in place. Returns how many frames were drawn.
 
     Nothing in here is allowed to end the session. A bad line on stdout, a
@@ -261,8 +276,15 @@ def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None):
     for state in iter_states(lines, on_error=lambda m: None):
         # Tabbing away from the app, or a full-screen modal, yields a frame
         # with no table in it. Hold the last real one rather than blanking the
-        # display -- what was on screen is still the most useful thing to show.
+        # display -- but redraw it marked HELD, so a stale table is never
+        # mistaken for a live one.
         if not state.seats:
+            if previous is not None:
+                try:
+                    draw(dashboard.render(previous, frames=drawn,
+                                          status="no table on screen"))
+                except Exception:
+                    pass
             continue
         try:
             draw(dashboard.render(state, previous=previous, frames=drawn + 1))
@@ -271,6 +293,8 @@ def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None):
             continue
         previous = state
         drawn += 1
+        if on_state:
+            on_state(state)
     return drawn
 
 

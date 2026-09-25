@@ -143,3 +143,41 @@ def test_chips_landing_before_the_pot_updates_is_not_flagged():
              Seat(seat_id="c", name="z", stack=1.0, position="BB", bet=0.05)]
 
     assert "!" not in render(_state(seats, pot=0.15))
+
+
+def test_a_held_display_says_so_rather_than_looking_live():
+    # When the iPad locks, no frames arrive at all and the last table stays on
+    # screen. Without a marker it looks like live data, which is the worst way
+    # for this to fail -- you would act on a stale table.
+    seats = [Seat(seat_id="hero", name="jxz", stack=9.9, position="SB")]
+
+    out = render(_state(seats, pot=1.0), status="lost the device")
+
+    assert "lost the device" in out
+    assert "held" in out.lower()
+
+
+def test_no_held_marker_while_frames_are_arriving():
+    seats = [Seat(seat_id="hero", name="jxz", stack=9.9, position="SB")]
+
+    assert "held" not in render(_state(seats, pot=1.0)).lower()
+
+
+def test_waiting_panel_asks_for_a_table_once_the_device_is_connected():
+    # Sitting in the PurePoker lobby is not a fault. Telling the user to
+    # unlock a device that is plainly already captured sends them looking for
+    # a problem that isn't there -- what they need to do is open a table.
+    from poker_vision.dashboard import render_waiting
+
+    out = render_waiting("capturing: James's iPad", connected=True)
+
+    assert "table" in out.lower()
+    assert "unlock" not in out.lower()
+
+
+def test_waiting_panel_explains_the_setup_when_not_yet_connected():
+    from poker_vision.dashboard import render_waiting
+
+    out = render_waiting("waiting: no iOS device attached over USB")
+
+    assert "unlock" in out.lower()

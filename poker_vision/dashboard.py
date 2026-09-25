@@ -73,15 +73,26 @@ def _pot_mismatch(state):
     return sum(bets) > _POT_OVERSHOOT_FACTOR * state.pot
 
 
-def render(state, previous=None, frames=None, latency_ms=None):
-    """The dashboard block for one frame."""
+def render(state, previous=None, frames=None, latency_ms=None, status=None):
+    """The dashboard block for one frame.
+
+    `status` marks the display as HELD: the table shown is the last one that
+    arrived, not a live read. That happens when the iPad locks (the capture
+    interface is withdrawn entirely, so no frames come at all) or when the
+    screen is showing something that is not a table. Saying so matters more
+    than it sounds -- a frozen table that looks live is the one failure that
+    could actually be acted on.
+    """
     previous_by_seat = ({s.seat_id: s for s in previous.seats} if previous else None)
 
     board = " ".join(_format_card(c) for c in state.board_cards) or "(none)"
     pot = _amount(state.pot)
     flag = "  ! bets > pot" if _pot_mismatch(state) else ""
 
-    lines = [f"  Pot {pot:<12}Board  {board}{flag}", "  " + "-" * _WIDTH]
+    header = f"  Pot {pot:<12}Board  {board}{flag}"
+    if status:
+        header = f"  [HELD] {status}\n" + header
+    lines = [header, "  " + "-" * _WIDTH]
 
     for seat in sorted(state.seats, key=lambda s: _position_rank(s.position)):
         moved = _changed(seat, previous_by_seat)
@@ -103,25 +114,30 @@ def render(state, previous=None, frames=None, latency_ms=None):
     return "\n".join(lines)
 
 
-def render_waiting(status=None):
-    """The panel shown before any frame has arrived.
+def render_waiting(status=None, connected=False):
+    """The panel shown before any table has been seen.
 
-    The live feed not being up is an ordinary state, not an error: the iPad
-    locks, QuickTime gets opened, the cable gets knocked. Say what is wrong
-    and what fixes it, and keep waiting.
+    Two different situations, and conflating them sends the user after the
+    wrong problem. Not connected: the device is locked, unplugged, or held by
+    QuickTime, and the setup hints are what they need. Connected but no table:
+    they are sitting in the lobby, nothing is broken, and the thing to do is
+    open a table.
     """
-    lines = ["  " + "-" * _WIDTH,
-             "  waiting for the table...",
-             ""]
-    if status:
-        lines.append(f"  {status}")
+    lines = ["  " + "-" * _WIDTH]
+    if connected:
+        lines += ["  connected - waiting for a poker table",
+                  "",
+                  f"  {status}" if status else "  capturing",
+                  "",
+                  "  open a table in PurePoker and it will appear here"]
     else:
-        lines.append("  starting capture")
-    lines += ["",
-              "  the iPad must be unlocked, plugged in over USB,",
-              "  and QuickTime Player must not be running",
-              "  " + "-" * _WIDTH,
-              "  ctrl-c to stop"]
+        lines += ["  waiting for the iPad...",
+                  "",
+                  f"  {status}" if status else "  starting capture",
+                  "",
+                  "  it must be unlocked and plugged in over USB,",
+                  "  and QuickTime Player must not be running"]
+    lines += ["  " + "-" * _WIDTH, "  ctrl-c to stop"]
     return "\n".join(lines)
 
 

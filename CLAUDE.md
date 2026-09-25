@@ -122,7 +122,7 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
 | `rank_templates.py` | Card ranks by template matching against stored exemplars (`data/rank_templates.npz`). Several exemplars per rank, because one set does **not** serve both devices. | board_reader |
 | `board_reader.py` | Reads the community board: rank from `rank_templates`, suit from `card_vision.classify_suit`. Has its own brightness-based card-presence test. | vision_reader |
 | `rank_templates.py` (see above) and the text mask together mean **three** readers share the frame: Vision for free-form text, template matching for card ranks, Tesseract for short stacks. Each is used where the others measurably fail. | | |
-| `dashboard.py` | Renders a `TableState` as a fixed block rewritten in place, `*` marking what moved. Pure: state in, string out. Holds the previous state **for display only** — that memory never reaches the parser. | vision_live |
+| `dashboard.py` | Renders a `TableState` as a fixed block rewritten in place, `*` marking what moved and `[HELD]` marking a stale one. Pure: state in, string out. Holds the previous state **for display only** — that memory never reaches the parser. | vision_live |
 | `vision_live.py` | Live runner: spawns the capture helper, turns its JSON lines into `TableState`, prints `format_summary`. Picks the anchor set from the frame size and skips a size it doesn't know rather than guessing. **No work queue on purpose** — the helper spends ~90ms/frame and this side ~0.15ms, so the consumer cannot fall behind; frames are dropped in the helper, where the diff gate lives. | — |
 | `tools/ipad_capture/capture.swift` | Swift helper: sets the CoreMediaIO flag, opens the USB iOS device, runs one `VNRecognizeTextRequest` per frame, emits JSON lines. `--dir` replays saved frames, `--live` captures. | — |
 | `overlay.py` | **Dead code.** Nothing imports it (leftover from the deleted cv2-window UI). Safe to delete. | — |
@@ -259,6 +259,16 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   dx/dy bounds -- the horizontal offset is ~100px on both devices, which is a
   different fraction of each one's width, while the diagonal fraction agrees
   (8.7-9.8%).
+
+- **A locked device sends no frames at all — it does not send non-table
+  frames.** iOS drops the iPad to a USB configuration with no capture
+  interface, so the device disappears from AVFoundation entirely. That
+  matters for the display: the reader blocks on a line that never comes and
+  the last table sits there looking live. Three states, and they need
+  different words: no device (unlock it / quit QuickTime), connected but no
+  table on screen (you are in the lobby — nothing is wrong), and a table that
+  has stopped updating (marked `[HELD]` with the reason). A frozen table that
+  looks live is the only failure here that could actually be acted on.
 
 - **Live capture supervises itself; it does not start once and hope.** The
   capture interface vanishes the instant the device locks -- iOS drops it back
