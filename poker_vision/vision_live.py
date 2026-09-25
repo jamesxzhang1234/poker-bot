@@ -19,17 +19,18 @@ import argparse
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from collections import namedtuple
 
-from . import regions, seat_anchors, vision_reader
+from . import dashboard, regions, seat_anchors, vision_reader
 from .table_state import is_plausible_table
 from .text_summary import format_summary
 
 HELPER = Path(__file__).resolve().parent.parent / "tools" / "ipad_capture" / "capture"
 
-Layout = namedtuple("Layout", "anchors board_slots rank_offset")
+Layout = namedtuple("Layout", "anchors board_slots rank_offset hero_cards")
 
 # Frame size -> that device's layout. Keyed on the captured resolution because
 # that is what identifies the device; a frame from anything not listed here is
@@ -39,7 +40,8 @@ _LAYOUT_BY_SIZE = {
     seat_anchors.IPAD_PORTRAIT_SIZE: Layout(
         seat_anchors.IPAD_PORTRAIT,
         seat_anchors.IPAD_BOARD_SLOTS,
-        seat_anchors.IPAD_RANK_OFFSET),
+        seat_anchors.IPAD_RANK_OFFSET,
+        seat_anchors.IPAD_HERO_CARDS),
     # The iPhone's board geometry already lives in regions.py, measured by
     # hand for the fixed-region parser; reuse it rather than keeping a second
     # copy that can drift. Its slots are at the reference resolution, which is
@@ -47,7 +49,8 @@ _LAYOUT_BY_SIZE = {
     seat_anchors.IPHONE_PORTRAIT_SIZE: Layout(
         seat_anchors.IPHONE_PORTRAIT,
         list(regions.BOARD_SLOTS),
-        regions.RANK_OFFSET),
+        regions.RANK_OFFSET,
+        list(regions.HERO_CARDS)),
 }
 
 
@@ -99,7 +102,8 @@ def iter_states(lines, anchors=None, on_error=None):
         yield vision_reader.build_table_state(
             line, chosen,
             board_slots=layout.board_slots if layout else None,
-            rank_offset=layout.rank_offset if layout else None)
+            rank_offset=layout.rank_offset if layout else None,
+            hero_cards=layout.hero_cards if layout else None)
 
 
 def run(lines, anchors=None, out=print, require_plausible=True):
@@ -120,10 +124,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--stdin", action="store_true",
                     help="read payloads from stdin instead of spawning the helper")
+    ap.add_argument("--text", action="store_true",
+                    help="print a scrolling summary per frame instead of the dashboard")
     ap.add_argument("--fast", action="store_true",
                     help="use Vision's .fast recognition (~14ms, fewer detections)")
     ap.add_argument("--min-interval", type=float, default=0.0,
                     help="seconds to wait between captured frames")
+    ap.add_argument("--blinds", help="blind sizes as SB/BB, e.g. 0.05/0.1")
     ap.add_argument("--all-frames", action="store_true",
                     help="summarise every frame, even ones that don't look like a table")
     args = ap.parse_args()
@@ -137,33 +144,134 @@ def main():
     except AttributeError:      # pragma: no cover - very old Python
         pass
 
+    if args.blinds:
+        record_blinds(args.blinds)
+
     if args.stdin:
-        run(sys.stdin, require_plausible=not args.all_frames)
+        if args.text:
+            run(sys.stdin, require_plausible=not args.all_frames)
+        else:
+            run_dashboard(sys.stdin)
         return
 
-    if not HELPER.exists():
-        raise SystemExit(
-            f"capture helper not built: {HELPER}\n"
-            f"  cd tools/ipad_capture && swiftc -O capture.swift -o capture")
+    proc = spawn_helper(fast=args.fast, min_interval=args.min_interval)
 
-    cmd = [str(HELPER), "--live"]
-    if args.fast:
-        cmd.append("--fast")
-    if args.min_interval:
-        cmd += ["--min-interval", str(args.min_interval)]
+    # The helper reports its own state on stderr -- "waiting: unlock the
+    # device", "lost the device" -- and those are the messages that tell the
+    # user what to fix. Show them in the waiting panel rather than letting
+    # them scroll past behind the dashboard.
+    state = {"status": None, "frames": 0}
+    lock = threading.Lock()
 
-    # stderr is left attached to the terminal so the helper's own diagnostics
-    # -- "device attached but exposes no capture interface", which means
-    # unlock it or quit QuickTime -- reach the user unfiltered.
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, bufsize=1)
+    def watch_stderr():
+        for raw in proc.stderr:
+            message = raw.strip()
+            if not message:
+                continue
+            with lock:
+                state["status"] = message
+                if state["frames"] == 0 and not args.text:
+                    dashboard.draw_to_terminal(dashboard.render_waiting(message))
+                elif args.text:
+                    print(f"[{message}]", file=sys.stderr)
+
+    threading.Thread(target=watch_stderr, daemon=True).start()
+
+    if not args.text:
+        dashboard.draw_to_terminal(dashboard.render_waiting())
+
+    def draw(text):
+        with lock:
+            state["frames"] += 1
+            dashboard.draw_to_terminal(text)
+
     try:
-        run(proc.stdout, require_plausible=not args.all_frames)
+        if args.text:
+            run(proc.stdout, require_plausible=not args.all_frames)
+        else:
+            run_dashboard(proc.stdout, draw=draw)
     except KeyboardInterrupt:
         pass
+    except Exception as exc:                # never end on a traceback
+        print(f"\ncapture stopped: {exc}", file=sys.stderr)
     finally:
         proc.terminate()
-        proc.wait(timeout=5)
-    raise SystemExit(proc.returncode or 0)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:   # pragma: no cover
+            proc.kill()
+
+    # Reaching here means the helper's stdout closed: it exited, or was
+    # stopped. Say which, with whatever it last reported.
+    with lock:
+        last = state["status"]
+    if state["frames"] == 0:
+        print("\nno frames were captured." + (f" last status: {last}" if last else ""),
+              file=sys.stderr)
+    raise SystemExit(0)
+
+
+
+
+def record_blinds(blinds, path=None):
+    """Persist the operator-entered blinds, as the push server does.
+
+    Kept so a later decision component can read the stakes without re-parsing
+    a command line -- the capture path changed, that contract did not.
+    """
+    from .server import DEFAULT_SESSION_FILE, parse_blinds, write_session_info
+    try:
+        small, big = parse_blinds(blinds)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    target = Path(path) if path else DEFAULT_SESSION_FILE
+    write_session_info(target, blinds, small, big)
+    return small, big
+
+
+def spawn_helper(helper=HELPER, fast=False, min_interval=0.0):
+    """Start the capture helper, or explain how to build it.
+
+    A missing binary is a setup problem with a one-line fix, so it reports
+    that rather than a traceback.
+    """
+    helper = Path(helper)
+    if not helper.exists():
+        raise SystemExit(
+            f"capture helper not built: {helper}\n"
+            f"  cd tools/ipad_capture && swiftc -O capture.swift -o capture")
+    cmd = [str(helper), "--live"]
+    if fast:
+        cmd.append("--fast")
+    if min_interval:
+        cmd += ["--min-interval", str(min_interval)]
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, bufsize=1)
+
+
+def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None):
+    """Render each frame in place. Returns how many frames were drawn.
+
+    Nothing in here is allowed to end the session. A bad line on stdout, a
+    state that will not render -- the table is mid-hand and the next frame is
+    a moment away, so both are reported and stepped over.
+    """
+    previous = None
+    drawn = 0
+    for state in iter_states(lines, on_error=lambda m: None):
+        # Tabbing away from the app, or a full-screen modal, yields a frame
+        # with no table in it. Hold the last real one rather than blanking the
+        # display -- what was on screen is still the most useful thing to show.
+        if not state.seats:
+            continue
+        try:
+            draw(dashboard.render(state, previous=previous, frames=drawn + 1))
+        except Exception:
+            # A rendering fault must not take the capture down with it.
+            continue
+        previous = state
+        drawn += 1
+    return drawn
 
 
 if __name__ == "__main__":

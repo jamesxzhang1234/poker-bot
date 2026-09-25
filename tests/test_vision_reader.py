@@ -727,3 +727,112 @@ def test_an_empty_crop_is_rejected():
     import numpy as np
     assert vision_reader.looks_like_digits(np.zeros((100, 250), dtype=np.uint8),
                                            height=2360) is False
+
+
+def test_attaches_a_bet_to_the_seat_that_made_it():
+    # Chips a player has committed this street render on the felt between
+    # their seat and the pot. Real coordinates from frames/ipad/ipad_015.png:
+    # hero's 0.05 sits 267px from the hero anchor.
+    obs = [_obs("jxz", 814, 1920), _obs("27.8", 820, 1980), _obs("0.05", 816, 1653)]
+
+    bets = vision_reader.find_bets(obs, vision_reader.assign_to_seats(
+        vision_reader.find_seat_plates(obs, 1640, 2360),
+        seat_anchors_ipad(), 1640, 2360), 1640, 2360)
+
+    assert bets == {"hero": 0.05}
+
+
+def seat_anchors_ipad():
+    from poker_vision import seat_anchors
+    return seat_anchors.IPAD_PORTRAIT
+
+
+def test_the_small_number_above_a_plate_is_not_a_bet():
+    # Each seat carries a small count just above its plate (85-98px away).
+    # Bets sit much further out, 165-270px, so the near ones must be excluded
+    # or every seat would report a bet it never made.
+    obs = [_obs("jxz", 814, 1920), _obs("27.8", 820, 1980), _obs("34", 892, 1860)]
+
+    bets = vision_reader.find_bets(obs, vision_reader.assign_to_seats(
+        vision_reader.find_seat_plates(obs, 1640, 2360),
+        seat_anchors_ipad(), 1640, 2360), 1640, 2360)
+
+    assert bets == {}
+
+
+def test_the_pot_is_not_attached_as_a_bet():
+    # The pot sits ~400px from the nearest seat, well beyond any bet.
+    obs = [_obs("Jaimie73", 404, 895), _obs("9.45", 404, 951),
+           _obs("Total Pot", 818, 878), _obs("0.55", 809, 914)]
+
+    bets = vision_reader.find_bets(obs, vision_reader.assign_to_seats(
+        vision_reader.find_seat_plates(obs, 1640, 2360),
+        seat_anchors_ipad(), 1640, 2360), 1640, 2360)
+
+    assert bets == {}
+
+
+def test_table_state_carries_each_seat_bet():
+    import json
+    from poker_vision import seat_anchors
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "observations": [
+            {"text": "jxz", "x": 814, "y": 1920, "w": 51, "h": 34, "confidence": 1.0},
+            {"text": "27.8", "x": 820, "y": 1980, "w": 82, "h": 37, "confidence": 1.0},
+            {"text": "0.05", "x": 816, "y": 1653, "w": 79, "h": 34, "confidence": 1.0},
+        ],
+    })
+
+    state = vision_reader.build_table_state(payload, seat_anchors.IPAD_PORTRAIT)
+
+    hero = [s for s in state.seats if s.seat_id == "hero"][0]
+    assert hero.bet == 0.05
+
+
+def test_a_board_card_rank_is_not_read_as_a_bet():
+    # The board sits in the middle of the table, inside the distance band
+    # where bets live. On a real frame the 5 of spades was attributed to
+    # mid_left as a 5.0 bet, which then made the bets disagree with the pot.
+    from poker_vision import seat_anchors
+    obs = [_obs("Jaimie73", 404, 895), _obs("9.45", 404, 951),
+           _obs("5", 524, 1013)]          # leftmost board card's rank
+    assigned = vision_reader.assign_to_seats(
+        vision_reader.find_seat_plates(obs, 1640, 2360),
+        seat_anchors.IPAD_PORTRAIT, 1640, 2360)
+
+    bets = vision_reader.find_bets(obs, assigned, 1640, 2360,
+                                   board_slots=seat_anchors.IPAD_BOARD_SLOTS)
+
+    assert bets == {}
+
+
+def test_a_real_bet_outside_the_board_is_still_read():
+    from poker_vision import seat_anchors
+    obs = [_obs("jxz", 814, 1920), _obs("27.8", 820, 1980), _obs("0.05", 816, 1653)]
+    assigned = vision_reader.assign_to_seats(
+        vision_reader.find_seat_plates(obs, 1640, 2360),
+        seat_anchors.IPAD_PORTRAIT, 1640, 2360)
+
+    bets = vision_reader.find_bets(obs, assigned, 1640, 2360,
+                                   board_slots=seat_anchors.IPAD_BOARD_SLOTS)
+
+    assert bets == {"hero": 0.05}
+
+
+def test_a_hero_hole_card_rank_is_not_read_as_a_bet():
+    # The hero's own cards render beside their seat, inside the bet distance
+    # band. On a real frame the 9 of spades became a 9.0 bet for hero, which
+    # is larger than the entire pot.
+    from poker_vision import seat_anchors
+    obs = [_obs("jxz", 814, 1920), _obs("27.8", 820, 1980), _obs("9", 977, 1866)]
+    assigned = vision_reader.assign_to_seats(
+        vision_reader.find_seat_plates(obs, 1640, 2360),
+        seat_anchors.IPAD_PORTRAIT, 1640, 2360)
+
+    bets = vision_reader.find_bets(
+        obs, assigned, 1640, 2360,
+        board_slots=seat_anchors.IPAD_BOARD_SLOTS,
+        hero_cards=seat_anchors.IPAD_HERO_CARDS)
+
+    assert bets == {}

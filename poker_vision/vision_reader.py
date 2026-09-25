@@ -393,7 +393,8 @@ def recover_stack(text_mask, plate, width, height):
     return number_ocr.ocr_number(cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR))
 
 
-def build_table_state(payload, anchors, board_slots=None, rank_offset=None):
+def build_table_state(payload, anchors, board_slots=None, rank_offset=None,
+                      hero_cards=None):
     """Turn one Vision payload into a TableState.
 
     Seats, stacks, the pot and each seat's status come from the recognised
@@ -437,6 +438,9 @@ def build_table_state(payload, anchors, board_slots=None, rank_offset=None):
                     assigned[seat_id] = candidate
                 break
 
+    bets = find_bets(frame.observations, assigned, frame.width, frame.height,
+                     board_slots=board_slots, hero_cards=hero_cards)
+
     seats = []
     for seat_id, plate in sorted(assigned.items()):
         key = (plate.name, plate.x, plate.y)
@@ -449,6 +453,7 @@ def build_table_state(payload, anchors, board_slots=None, rank_offset=None):
             name=plate.name,
             stack=stack,
             position=badges.get(key),
+            bet=bets.get(seat_id),
             status=status,
             in_hand=is_in_hand(status),
             is_hero=(seat_id == seat_anchors.HERO_SEAT_ID),
@@ -594,6 +599,67 @@ def find_badges(observations, width, height):
         _, plate = min(candidates, key=lambda dp: dp[0])
         out[(plate.name, plate.x, plate.y)] = badge
     return out
+
+
+# How far a player's committed chips sit from their seat anchor, as a fraction
+# of the frame diagonal. Measured on real frames: bets land 165-270px out on
+# the iPad's 2874px diagonal (5.7-9.4%). The floor matters as much as the
+# ceiling -- each seat carries a small count 85-98px above its plate, and
+# without it every seat would report a bet it never made. The ceiling keeps
+# the pot out, which sits ~400px away.
+_BET_DIST_MIN = 0.045
+_BET_DIST_MAX = 0.110
+
+
+def find_bets(observations, assigned, width, height, board_slots=None,
+              hero_cards=None):
+    """Chips each seat has committed this street, as {seat_id: amount}.
+
+    These are the amounts the UI renders on the felt between a seat and the
+    pot, so they are read rather than inferred -- no comparing stacks across
+    frames, which the single-frame rule rules out anyway. They should sum to
+    the pot, which makes a useful self-check: it held exactly on the frames
+    this was measured against.
+    """
+    diagonal = (width ** 2 + height ** 2) ** 0.5
+    near, far = _BET_DIST_MIN * diagonal, _BET_DIST_MAX * diagonal
+
+    # A seat's own stack is part of its plate, never a bet.
+    plate_rows = {(p.x, p.y) for p in assigned.values()}
+
+    # Both are lists of boxes; regions.HERO_CARDS already is one, so keeping
+    # the iPad's the same shape means no special-casing per device.
+    excluded = list(board_slots or []) + list(hero_cards or [])
+
+    def on_the_board(o):
+        """Board card ranks sit mid-table, inside the bet distance band.
+
+        On a real frame the 5 of spades was attributed to mid_left as a 5.0
+        bet, which then made the bets disagree with the pot. The board's
+        position is known, so exclude it outright.
+        """
+        return any(x1 <= o.x <= x2 and y1 <= o.y <= y2
+                   for x1, y1, x2, y2 in excluded)
+
+    best = {}
+    for o in observations:
+        if o.confidence < _MIN_CONFIDENCE:
+            continue
+        value = parse_amount(o.text)
+        if value is None:
+            continue
+        if any(abs(o.x - px) < 0.06 * width and abs(o.y - py) < 0.05 * height
+               for px, py in plate_rows):
+            continue
+        if on_the_board(o):
+            continue
+        for seat_id, plate in assigned.items():
+            distance = ((o.x - plate.x) ** 2 + (o.y - plate.y) ** 2) ** 0.5
+            if not (near <= distance <= far):
+                continue
+            if seat_id not in best or distance < best[seat_id][0]:
+                best[seat_id] = (distance, value)
+    return {seat_id: value for seat_id, (_, value) in best.items()}
 
 
 def is_in_hand(status):

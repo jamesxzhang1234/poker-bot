@@ -74,3 +74,11 @@ IPAD_BOARD_SLOTS = [(495 + i * 136, 985, 495 + i * 136 + 118, 1139) for i in ran
 # short of the suit pip, which would otherwise merge with the rank and give
 # the same rank several different templates.
 IPAD_RANK_OFFSET = (8, 4, 70, 48)
+
+
+# The hero's own two cards, which render fanned beside their seat -- inside
+# the distance band where bets live, so their rank glyphs would otherwise be
+# read as chips the hero had committed.
+# A list of boxes, matching regions.HERO_CARDS on the iPhone side, so both
+# devices hand find_bets the same shape.
+IPAD_HERO_CARDS = [(940, 1850, 1180, 2070)]

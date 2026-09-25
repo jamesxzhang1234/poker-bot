@@ -12,6 +12,8 @@ class Seat:
                                          # standard name like "UTG" / "HJ" /
                                          # "CO" (inferred, see parser.infer_positions) / None
     status: Optional[str] = None        # "Folded" / "Call" / "Raise" / "Check" / "Sitting Out" / ...
+    bet: Optional[float] = None          # chips committed this street, read from
+                                         # the felt between the seat and the pot
     in_hand: bool = False
     is_hero: bool = False
     hole_cards: List[str] = field(default_factory=list)  # only known for hero, or at showdown

@@ -76,8 +76,11 @@ python tools/region_preview.py <frame.png> <out.png>   # draw regions.py boxes o
 python tools/grid_overlay.py ...                       # pixel grid for measuring new boxes
 ```
 
-There's also a `start poker [SB/BB]` zsh function in `~/.zshrc` that launches
-the server.
+There's also a `start poker [SB/BB]` zsh function in `~/.zshrc`. It now runs
+the **live Vision path** with the in-place dashboard, builds the Swift helper
+if it is missing, and kills any stale helper first (only one process can hold
+the device). The push server is still reachable as
+`python -m poker_vision.server`.
 
 **Real screenshots** live in `PurePokerScreenshots/` and `frames/incoming/`.
 Both are gitignored (personal data) — use them for manual before/after
@@ -119,6 +122,7 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
 | `rank_templates.py` | Card ranks by template matching against stored exemplars (`data/rank_templates.npz`). Several exemplars per rank, because one set does **not** serve both devices. | board_reader |
 | `board_reader.py` | Reads the community board: rank from `rank_templates`, suit from `card_vision.classify_suit`. Has its own brightness-based card-presence test. | vision_reader |
 | `rank_templates.py` (see above) and the text mask together mean **three** readers share the frame: Vision for free-form text, template matching for card ranks, Tesseract for short stacks. Each is used where the others measurably fail. | | |
+| `dashboard.py` | Renders a `TableState` as a fixed block rewritten in place, `*` marking what moved. Pure: state in, string out. Holds the previous state **for display only** — that memory never reaches the parser. | vision_live |
 | `vision_live.py` | Live runner: spawns the capture helper, turns its JSON lines into `TableState`, prints `format_summary`. Picks the anchor set from the frame size and skips a size it doesn't know rather than guessing. **No work queue on purpose** — the helper spends ~90ms/frame and this side ~0.15ms, so the consumer cannot fall behind; frames are dropped in the helper, where the diff gate lives. | — |
 | `tools/ipad_capture/capture.swift` | Swift helper: sets the CoreMediaIO flag, opens the USB iOS device, runs one `VNRecognizeTextRequest` per frame, emits JSON lines. `--dir` replays saved frames, `--live` captures. | — |
 | `overlay.py` | **Dead code.** Nothing imports it (leftover from the deleted cv2-window UI). Safe to delete. | — |
@@ -200,6 +204,22 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   backgrounds, 8 changed, all `d`->`s`, all the same navy card across
   consecutive frames of one hand, zero changes on the iPhone.
 
+- **The pot is cumulative across streets; the chips on the felt are only the
+  current one.** They match pre-flop and diverge from the flop on, so "bets
+  should equal the pot" is NOT an invariant -- built as one, it fired on 13 of
+  30 frames. Only the other direction is a fault: bets totalling *more* than
+  the pot is impossible, since the pot already contains them. Even that needs
+  headroom, because chips land on the felt a frame before the pot absorbs
+  them, so during the animation bets legitimately run about a blind ahead
+  (2 of 30 frames). The check triggers past 2x the pot, which caught the
+  hero's own hole card being counted as a 9.0 bet against a pot of 0.15.
+
+- **Board card ranks and the hero's hole cards sit inside the bet distance
+  band.** Both render mid-table or beside the hero, where committed chips
+  live, so their rank glyphs read as amounts -- the 5 of spades became a 5.0
+  bet for mid_left. `find_bets` excludes both regions outright; their
+  positions are known, so there is no need to guess.
+
 - **Vision misses short isolated numbers, and this is its main accuracy gap.**
   Adjudicating the 29 reads the Tesseract parser produced that the Vision path
   did not: **19 were one-character values** -- a stack of "5" or "0" where
@@ -217,6 +237,18 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   a `4.0` stack at an empty seat, 2 were Tesseract reading a **Microsoft Teams
   notification** overlaying the screen (`24.087`, `1.1`), and 1 was Vision
   reading "IO" for 10, now folded.
+
+- **Position coverage is 80% of frames, and that is 100% of the frames that
+  matter -- don't go chasing the other 20%.** PurePoker shows SB and BB only
+  while a hand is live; at showdown, run-it-once or a bomb pot it hides them
+  and leaves the dealer button alone, or nothing. Measured over 30 iPad
+  frames the split is exact: every frame with positions had 2-3 badges on
+  screen, every frame without had **1 or 0**. So the gap is the UI not
+  displaying the information, in states where the hand is already decided --
+  not a detection failure. Recovering the lone "D" would reach ~97% (one
+  frame shows no badge at all and never can be read) and would only label
+  frames in which no decision is being made. Costed at ~110ms on 20% of
+  frames; judged not worth it.
 
 - **Vision never returns a bare "D".** A single character is too isolated for
   its text detector, so only "SB" and "BB" arrive. That is enough: one badge

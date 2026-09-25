@@ -152,3 +152,87 @@ def test_no_warning_when_every_plate_lands_on_a_seat():
     list(vision_live.iter_states([payload], on_error=warnings.append))
 
     assert warnings == []
+
+
+def test_dashboard_run_returns_the_number_of_frames_shown():
+    shown = []
+    n = vision_live.run_dashboard([_payload(index=0), _payload(index=1)],
+                                  draw=shown.append)
+
+    assert n == 2
+    assert len(shown) == 2
+    assert "drake81" in shown[-1]
+
+
+def test_dashboard_run_survives_a_bad_line():
+    # A truncated or interleaved write on the helper's stdout must not end the
+    # session -- the table is mid-hand and the next frame is a moment away.
+    shown = []
+    n = vision_live.run_dashboard(["{not json", _payload(), ""], draw=shown.append)
+
+    assert n == 1
+
+
+def test_dashboard_run_survives_a_frame_it_cannot_render():
+    # A rendering bug must not kill a live capture either.
+    def explode(_):
+        raise RuntimeError("boom")
+
+    calls = {"n": 0}
+
+    def draw(text):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+
+    n = vision_live.run_dashboard([_payload(index=0), _payload(index=1)], draw=draw)
+
+    assert n == 1          # the second frame still rendered
+    assert calls["n"] == 2
+
+
+def test_missing_helper_reports_how_to_build_it_rather_than_crashing():
+    import pytest
+    with pytest.raises(SystemExit) as exc:
+        vision_live.spawn_helper(helper=Path("/nonexistent/capture"), fast=False,
+                                 min_interval=0.0)
+
+    assert "swiftc" in str(exc.value)
+
+
+from pathlib import Path
+
+
+def test_blinds_are_recorded_for_a_later_consumer(tmp_path):
+    # The blinds menu exists so a future decision component knows the stakes;
+    # the live path must keep writing them the way the push server did.
+    target = tmp_path / "session.json"
+
+    vision_live.record_blinds("0.05/0.1", target)
+
+    import json
+    saved = json.loads(target.read_text())
+    assert saved["small_blind"] == 0.05
+    assert saved["big_blind"] == 0.1
+
+
+def test_malformed_blinds_are_rejected_with_a_readable_message(tmp_path):
+    import pytest
+    with pytest.raises(SystemExit) as exc:
+        vision_live.record_blinds("not-blinds", tmp_path / "session.json")
+
+    assert "SB/BB" in str(exc.value)
+
+
+def test_dashboard_keeps_the_last_table_when_the_screen_is_not_a_table():
+    # Tabbing away from the poker app, or a full-screen modal, produces a
+    # frame with no seats. Replacing a good dashboard with an empty grid
+    # throws away the last thing you actually wanted to see.
+    empty = json.dumps({"frame_index": 1, "timestamp_sec": 0.0,
+                        "width": 1640, "height": 2360, "observations": []})
+    shown = []
+
+    n = vision_live.run_dashboard([_payload(index=0), empty], draw=shown.append)
+
+    assert n == 1
+    assert "drake81" in shown[-1]
