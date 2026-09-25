@@ -42,12 +42,52 @@ func boardStrip(_ cg: CGImage) -> String? {
     return png.base64EncodedString()
 }
 
+// MARK: - Text mask
+
+// A full-resolution binary mask of the frame's text, white on black.
+//
+// Vision does not report one- and two-character stacks: it reads the handle
+// and simply omits the number below it, which was 19 of the 29 stacks the
+// fixed-region parser found and the Vision path missed. Recovering those
+// needs pixels, and this is the cheapest way to carry them -- the mask is
+// almost all background so it compresses to ~23KB, less than the board strip,
+// while covering the whole frame at full resolution.
+//
+// The colour bands MUST stay in step with ocr_utils.name_stack_mask on the
+// Python side: white for handles, warm orange for amounts. If those move,
+// move these.
+func textMask(_ cg: CGImage) -> String? {
+    let w = cg.width, h = cg.height
+    var rgba = [UInt8](repeating: 0, count: w * h * 4)
+    guard let ctx = CGContext(data: &rgba, width: w, height: h, bitsPerComponent: 8,
+                              bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    else { return nil }
+    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+    var gray = [UInt8](repeating: 0, count: w * h)
+    for i in 0..<(w * h) {
+        let r = Int(rgba[i * 4]), g = Int(rgba[i * 4 + 1]), b = Int(rgba[i * 4 + 2])
+        let white  = r > 150 && g > 150 && b > 150
+        let orange = r > 140 && g > 90 && b < 130 && (r - b) > 40
+        gray[i] = (white || orange) ? 255 : 0
+    }
+    guard let space = CGColorSpace(name: CGColorSpace.linearGray),
+          let out = CGContext(data: &gray, width: w, height: h, bitsPerComponent: 8,
+                              bytesPerRow: w, space: space,
+                              bitmapInfo: CGImageAlphaInfo.none.rawValue),
+          let maskImage = out.makeImage() else { return nil }
+    let rep = NSBitmapImageRep(cgImage: maskImage)
+    guard let png = rep.representation(using: .png, properties: [:]) else { return nil }
+    return png.base64EncodedString()
+}
+
 // MARK: - JSON output
 
 struct Emitter {
     static func emit(index: Int, timestamp: Double, width: Int, height: Int,
                      observations: [(String, CGRect, Float)], source: String? = nil,
-                     strip: String? = nil) {
+                     strip: String? = nil, mask: String? = nil) {
         var rows: [[String: Any]] = []
         let W = Double(width), H = Double(height)
         for (text, bb, conf) in observations {
@@ -71,6 +111,7 @@ struct Emitter {
         // and anything zipping payloads against a directory listing by
         // position would silently pair every later frame with the wrong one.
         if let source = source { payload["source"] = source }
+        if let mask = mask { payload["text_mask"] = mask }
         if let strip = strip {
             payload["board_strip"] = strip
             payload["board_strip_rect"] = [BOARD_RECT.x, BOARD_RECT.y,
@@ -126,7 +167,7 @@ func runDirectory(_ dir: String, fast: Bool) {
             .data(using: .utf8)!)
         Emitter.emit(index: i, timestamp: Date().timeIntervalSince1970,
                      width: cg.width, height: cg.height, observations: obs, source: name,
-                     strip: boardStrip(cg))
+                     strip: boardStrip(cg), mask: textMask(cg))
     }
 }
 
@@ -192,7 +233,7 @@ final class LiveCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
         let obs = recogniseText(cg, fast: fast)
         Emitter.emit(index: index, timestamp: Date().timeIntervalSince1970,
                      width: cg.width, height: cg.height, observations: obs,
-                     strip: boardStrip(cg))
+                     strip: boardStrip(cg), mask: textMask(cg))
         index += 1
     }
 }

@@ -118,6 +118,7 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
 | `seat_anchors.py` | One (x, y) anchor per seat, per device: `IPAD_PORTRAIT`, `IPHONE_PORTRAIT`. Derived by clustering real frames, not hand-measured. | vision_reader, vision_live |
 | `rank_templates.py` | Card ranks by template matching against stored exemplars (`data/rank_templates.npz`). Several exemplars per rank, because one set does **not** serve both devices. | board_reader |
 | `board_reader.py` | Reads the community board: rank from `rank_templates`, suit from `card_vision.classify_suit`. Has its own brightness-based card-presence test. | vision_reader |
+| `rank_templates.py` (see above) and the text mask together mean **three** readers share the frame: Vision for free-form text, template matching for card ranks, Tesseract for short stacks. Each is used where the others measurably fail. | | |
 | `vision_live.py` | Live runner: spawns the capture helper, turns its JSON lines into `TableState`, prints `format_summary`. Picks the anchor set from the frame size and skips a size it doesn't know rather than guessing. **No work queue on purpose** — the helper spends ~90ms/frame and this side ~0.15ms, so the consumer cannot fall behind; frames are dropped in the helper, where the diff gate lives. | — |
 | `tools/ipad_capture/capture.swift` | Swift helper: sets the CoreMediaIO flag, opens the USB iOS device, runs one `VNRecognizeTextRequest` per frame, emits JSON lines. `--dir` replays saved frames, `--live` captures. | — |
 | `overlay.py` | **Dead code.** Nothing imports it (leftover from the deleted cv2-window UI). Safe to delete. | — |
@@ -205,9 +206,14 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   Vision read the handle above it and nothing else (`['BillWynn']`,
   `['kpk']`, `['MrTxx']`). It is the same isolated-glyph weakness that costs
   it card ranks and the bare "D" badge. It matters more here, because a stack
-  of 0 or 5 is exactly the interesting case. Fixing it needs pixels for the
-  stack rows, the way board_reader gets them for the board -- not a parsing
-  change. Of the rest: 4 were Tesseract reading the orange **Raise button** as
+  of 0 or 5 is exactly the interesting case. **Fixed** by attaching a
+  full-resolution binary text mask to the payload (~57KB base64, cheaper than
+  it sounds because the mask is almost all background) and re-reading those
+  stack rows with Tesseract -- which is slow per call but does read isolated
+  glyphs, exactly Vision's weakness. It runs on a handful of crops per frame
+  instead of 129, gated by a cheap shape check so the expensive call is only
+  made where digits plausibly are. On the frame whose stacks were checked by
+  eye this took the reading from 6/9 seats to 9/9. Of the rest: 4 were Tesseract reading the orange **Raise button** as
   a `4.0` stack at an empty seat, 2 were Tesseract reading a **Microsoft Teams
   notification** overlaying the screen (`24.087`, `1.1`), and 1 was Vision
   reading "IO" for 10, now folded.

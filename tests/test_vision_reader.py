@@ -640,3 +640,90 @@ def test_letter_folding_does_not_turn_words_into_amounts():
     # Folding must not manufacture a number out of ordinary text.
     for text in ["Invite", "All In", "Fold", "IOU", "LOL", "Total Pot", "NLH"]:
         assert vision_reader.parse_amount(text) is None, text
+
+
+def test_payload_carries_a_decoded_text_mask():
+    import json
+    import cv2
+    import numpy as np
+    mask = np.zeros((200, 100), dtype=np.uint8)
+    mask[50:60, 20:40] = 255
+    import base64
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "text_mask": base64.b64encode(cv2.imencode(".png", mask)[1].tobytes()).decode(),
+        "observations": [],
+    })
+
+    frame = vision_reader.parse_payload(payload)
+
+    assert frame.text_mask is not None
+    assert frame.text_mask.shape == (200, 100)
+
+
+def test_text_mask_is_none_when_absent():
+    import json
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "observations": [],
+    })
+
+    assert vision_reader.parse_payload(payload).text_mask is None
+
+
+def test_recovers_a_short_stack_that_vision_missed():
+    # Vision reads the handle but not a one-character stack beneath it -- 19
+    # of the 29 reads the Tesseract parser found and this path did not were
+    # single characters. With the frame's text mask attached, that one seat's
+    # stack row can be re-read rather than left unknown.
+    import base64
+    import json
+    import cv2
+    import numpy as np
+    from poker_vision import seat_anchors
+
+    mask = np.zeros((2360, 1640), dtype=np.uint8)
+    # a "5" drawn where mid_left's stack row sits, at a realistic glyph size
+    cv2.putText(mask, "5", (380, 975), cv2.FONT_HERSHEY_SIMPLEX, 1.6, 255, 4)
+
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "text_mask": base64.b64encode(cv2.imencode(".png", mask)[1].tobytes()).decode(),
+        "observations": [
+            {"text": "Jaimie73", "x": 404, "y": 895, "w": 130, "h": 30, "confidence": 1.0},
+        ],
+    })
+
+    state = vision_reader.build_table_state(payload, seat_anchors.IPAD_PORTRAIT)
+
+    seat = [s for s in state.seats if s.seat_id == "mid_left"][0]
+    assert seat.name == "Jaimie73"
+    assert seat.stack == 5.0
+
+
+def test_a_crop_with_no_digit_sized_marks_is_rejected_without_ocr():
+    # Recovery runs Tesseract, which costs ~56ms a call, and it is attempted
+    # for every seat missing a stack -- most of which have nothing there. A
+    # cheap shape check keeps the expensive call for crops that could actually
+    # hold digits.
+    import numpy as np
+    speckle = np.zeros((100, 250), dtype=np.uint8)
+    speckle[10:13, 20:23] = 255          # far too small to be a glyph
+    speckle[60:62, 200:203] = 255
+
+    assert vision_reader.looks_like_digits(speckle, height=2360) is False
+
+
+def test_a_crop_with_a_digit_sized_mark_is_accepted():
+    import cv2
+    import numpy as np
+    crop = np.zeros((100, 250), dtype=np.uint8)
+    cv2.putText(crop, "5", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.6, 255, 4)
+
+    assert vision_reader.looks_like_digits(crop, height=2360) is True
+
+
+def test_an_empty_crop_is_rejected():
+    import numpy as np
+    assert vision_reader.looks_like_digits(np.zeros((100, 250), dtype=np.uint8),
+                                           height=2360) is False

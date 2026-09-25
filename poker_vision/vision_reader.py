@@ -17,7 +17,7 @@ from typing import List
 import cv2
 import numpy as np
 
-from . import board_reader, parser, seat_anchors
+from . import board_reader, number_ocr, parser, seat_anchors
 from .table_state import Seat, TableState
 
 
@@ -50,6 +50,11 @@ class VisionFrame:
     board_strip: "np.ndarray" = None
     # Where that crop came from, as (x, y, w, h) fractions of the frame.
     board_strip_rect: tuple = None
+    # Full-resolution binary mask of the frame's text, white on black. Costs
+    # ~23KB as a PNG because it is almost all background, which is cheaper
+    # than the board strip while covering the whole frame -- and it is what
+    # lets a stack Vision failed to detect be re-read from pixels.
+    text_mask: "np.ndarray" = None
 
 
 def parse_payload(payload):
@@ -63,7 +68,14 @@ def parse_payload(payload):
         strip = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
     rect = data.get("board_strip_rect")
 
+    text_mask = None
+    encoded_mask = data.get("text_mask")
+    if encoded_mask:
+        buffer = np.frombuffer(base64.b64decode(encoded_mask), dtype=np.uint8)
+        text_mask = cv2.imdecode(buffer, cv2.IMREAD_GRAYSCALE)
+
     return VisionFrame(
+        text_mask=text_mask,
         board_strip=strip,
         board_strip_rect=tuple(rect) if rect else None,
         frame_index=data["frame_index"],
@@ -256,6 +268,16 @@ def find_pot(observations, width, height):
 _ANCHOR_RADIUS = 0.055
 
 
+def find_handles(observations, width, height):
+    """Every observation that could be a player's handle, paired or not."""
+    return [
+        o for o in observations
+        if o.confidence >= _MIN_CONFIDENCE
+        and parse_amount(o.text) is None
+        and _is_handle(o.text)
+    ]
+
+
 def plates_without_seat(plates, anchors, width, height):
     """Plates that landed too far from every anchor to be assigned.
 
@@ -295,6 +317,82 @@ def assign_to_seats(plates, anchors, width, height):
     return {seat_id: plate for seat_id, (_, plate) in best.items()}
 
 
+# Where a seat's stack row sits below its handle, as fractions of frame
+# height, and how wide to reach either side as a fraction of frame width.
+# Same band find_seat_plates pairs on, widened slightly because here we are
+# cropping pixels rather than matching an already-located string.
+_STACK_ROW = (0.008, 0.042, 0.075)
+
+
+# A stack digit is about 1% of frame height (25px on the iPad's 2360, 26px on
+# the iPhone's 2622). The band is generous either side; its job is only to
+# reject crops that plainly hold no digits.
+_DIGIT_H_MIN = 0.006
+_DIGIT_H_MAX = 0.030
+
+
+def looks_like_digits(crop, height):
+    """Whether a mask crop plausibly contains digits.
+
+    Recovery runs Tesseract at ~56ms a call and is attempted for every seat
+    missing a stack, most of which have nothing to read. This is the cheap
+    check that keeps the expensive one for crops that could actually pay off.
+    """
+    if crop is None or crop.size == 0 or not crop.any():
+        return False
+    count, _, stats, _ = cv2.connectedComponentsWithStats(
+        (crop > 0).astype(np.uint8), connectivity=8)
+    lo, hi = _DIGIT_H_MIN * height, _DIGIT_H_MAX * height
+    for i in range(1, count):
+        h = stats[i, cv2.CC_STAT_HEIGHT]
+        w = stats[i, cv2.CC_STAT_WIDTH]
+        area = stats[i, cv2.CC_STAT_AREA]
+        if not (lo <= h <= hi) or h == 0:
+            continue
+        # A digit is markedly taller than wide and solidly inked. Compression
+        # artefacts in the mask clear the height test easily but not these:
+        # they come out as sparse blobs of roughly square proportions.
+        if not (0.15 <= w / h <= 1.2):
+            continue
+        if area < 80:
+            continue
+        return True
+    return False
+
+
+def recover_stack(text_mask, plate, width, height):
+    """Re-read a seat's stack from the frame's text mask.
+
+    For the case Vision cannot handle: a one- or two-character stack that its
+    text detector does not report at all, even though it reads the handle
+    directly above. 19 of the 29 stacks the fixed-region parser found and this
+    path missed were single characters, so this is the main accuracy gap.
+
+    Tesseract is used here on purpose, and only here. It is slow per call
+    (~56ms, nearly all process overhead) but it does read isolated glyphs,
+    which is exactly Vision's weakness -- and it runs on a handful of crops
+    per frame rather than 129, so the cost stays small.
+    """
+    if text_mask is None:
+        return None
+    top_f, bottom_f, side_f = _STACK_ROW
+    y1 = int(plate.y + top_f * height)
+    y2 = int(plate.y + bottom_f * height)
+    x1 = int(plate.x - side_f * width)
+    x2 = int(plate.x + side_f * width)
+    y1, x1 = max(y1, 0), max(x1, 0)
+    y2, x2 = min(y2, text_mask.shape[0]), min(x2, text_mask.shape[1])
+    if y2 <= y1 or x2 <= x1:
+        return None
+    crop = text_mask[y1:y2, x1:x2]
+    if not looks_like_digits(crop, height):
+        return None
+    # ocr_number expects a colour crop and builds its own mask by keying on
+    # white; a white-on-black mask satisfies that unchanged, so the existing
+    # decimal-point and digit-confusion recovery all still applies.
+    return number_ocr.ocr_number(cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR))
+
+
 def build_table_state(payload, anchors, board_slots=None, rank_offset=None):
     """Turn one Vision payload into a TableState.
 
@@ -314,14 +412,42 @@ def build_table_state(payload, anchors, board_slots=None, rank_offset=None):
     statuses = find_statuses(frame.observations, frame.width, frame.height)
     badges = find_badges(frame.observations, frame.width, frame.height)
 
+    # A handle sitting on a seat anchor with no stack text beneath it is the
+    # case Vision cannot see: it reads the name and simply does not report a
+    # one-character stack below. Re-read those from the mask. Requiring BOTH
+    # anchor proximity and a successful numeric read is what keeps a stray
+    # word from becoming a phantom seat.
+    if frame.text_mask is not None:
+        radius = _ANCHOR_RADIUS * ((frame.width ** 2 + frame.height ** 2) ** 0.5)
+        paired = {(p.name, p.x, p.y) for p in plates}
+        for handle in find_handles(frame.observations, frame.width, frame.height):
+            if (handle.text, handle.x, handle.y) in paired:
+                continue
+            for seat_id, (ax, ay) in anchors.items():
+                if seat_id in assigned:
+                    continue
+                if ((handle.x - ax) ** 2 + (handle.y - ay) ** 2) ** 0.5 > radius:
+                    continue
+                candidate = SeatPlate(name=handle.text, stack=None,
+                                      x=handle.x, y=handle.y)
+                value = recover_stack(frame.text_mask, candidate,
+                                      frame.width, frame.height)
+                if value is not None:
+                    candidate.stack = value
+                    assigned[seat_id] = candidate
+                break
+
     seats = []
     for seat_id, plate in sorted(assigned.items()):
         key = (plate.name, plate.x, plate.y)
         status = statuses.get(key)
+        stack = plate.stack
+        if stack is None:
+            stack = recover_stack(frame.text_mask, plate, frame.width, frame.height)
         seats.append(Seat(
             seat_id=seat_id,
             name=plate.name,
-            stack=plate.stack,
+            stack=stack,
             position=badges.get(key),
             status=status,
             in_hand=is_in_hand(status),
