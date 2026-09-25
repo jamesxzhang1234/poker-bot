@@ -17,6 +17,7 @@ Usage:
 """
 import argparse
 import json
+import queue
 import subprocess
 import sys
 import threading
@@ -227,8 +228,8 @@ def main():
         if args.text:
             run(proc.stdout, require_plausible=not args.all_frames)
         else:
-            run_dashboard(proc.stdout, draw=draw, on_state=remember,
-                          status_of=current_fault)
+            run_dashboard(newest_first(proc.stdout), draw=draw,
+                          on_state=remember, status_of=current_fault)
     except KeyboardInterrupt:
         pass
     except Exception as exc:                # never end on a traceback
@@ -286,6 +287,57 @@ def spawn_helper(helper=HELPER, fast=False, min_interval=0.0):
         cmd += ["--min-interval", str(min_interval)]
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, bufsize=1)
+
+
+def newest_first(stream, on_drop=None):
+    """Yield lines from `stream`, skipping any that piled up while busy.
+
+    The helper emits a frame whenever the screen content changes, which during
+    active play is far faster than one can be parsed -- parsing now costs
+    ~129ms and spikes higher, since it does board template matching, stack
+    recovery and hole cards. Consuming the pipe in order therefore falls
+    progressively further behind the table, and because the pipe is an
+    unbounded buffer the lag grows without limit rather than settling.
+
+    Dropping to the newest waiting frame fixes that by construction: the
+    display is always at most one parse behind, whatever the capture rate.
+    Throttling the helper alone would not, since any interval shorter than the
+    parse time still accumulates.
+    """
+    pending = queue.Queue()
+    finished = object()
+
+    def pump():
+        try:
+            for line in stream:
+                pending.put(line)
+        finally:
+            pending.put(finished)
+
+    threading.Thread(target=pump, daemon=True).start()
+
+    while True:
+        line = pending.get()
+        if line is finished:
+            return
+        # Anything that arrived while the previous frame was being parsed is
+        # already out of date; keep only the last of it.
+        dropped = 0
+        while True:
+            try:
+                following = pending.get_nowait()
+            except queue.Empty:
+                break
+            if following is finished:
+                if on_drop and dropped:
+                    on_drop(dropped)
+                yield line
+                return
+            line = following
+            dropped += 1
+        if on_drop and dropped:
+            on_drop(dropped)
+        yield line
 
 
 def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,

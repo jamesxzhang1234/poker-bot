@@ -287,3 +287,48 @@ def test_hero_hole_cards_are_tracked_across_the_hand():
 
     hero = [s for s in states[0].seats if s.is_hero]
     assert hero == [] or hero[0].hole_cards == ["Ad", "Kd"]
+
+
+def test_stale_frames_are_dropped_in_favour_of_the_newest():
+    # The helper emits whenever the screen changes, which during play is far
+    # faster than a frame can be parsed. Reading the pipe in order means the
+    # display falls progressively further behind the table -- the backlog is
+    # unbounded, so the lag grows without limit. Only the newest frame is
+    # worth rendering.
+    lines = [f"line{i}" for i in range(5)]
+
+    assert list(vision_live.newest_first(lines)) == ["line4"]
+
+
+def test_a_single_frame_is_delivered_unchanged():
+    assert list(vision_live.newest_first(["only"])) == ["only"]
+
+
+def test_an_empty_stream_yields_nothing():
+    assert list(vision_live.newest_first([])) == []
+
+
+def test_every_frame_is_delivered_when_they_arrive_one_at_a_time():
+    # Nothing is dropped unless a frame actually piled up behind another.
+    import queue as _q
+    import threading
+    import time
+
+    slow = _q.Queue()
+
+    def trickle():
+        for i in range(3):
+            slow.put(f"line{i}")
+            time.sleep(0.05)
+        slow.put(None)
+
+    threading.Thread(target=trickle, daemon=True).start()
+
+    def stream():
+        while True:
+            item = slow.get()
+            if item is None:
+                return
+            yield item
+
+    assert list(vision_live.newest_first(stream())) == ["line0", "line1", "line2"]

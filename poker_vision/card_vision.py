@@ -20,6 +20,10 @@ _RANK_WHITELIST = "23456789TJQKA"
 # then "4d". By brightest channel the classes are far apart -- spades top out
 # at 55 and the dimmest non-spade (a club) starts at 110 -- so this threshold
 # sits in a wide empty gap instead of on top of the data.
+#
+# This is for BOARD cards, sampled from a corner patch of an unobstructed
+# card. Hero cards are sampled differently and need their own rule; see
+# classify_hero_suit.
 _SPADE_MAX_CHANNEL = 80
 
 
@@ -32,6 +36,29 @@ def classify_suit(bgr_mean):
     if b >= g and b >= r:
         return "d"  # diamonds: blue
     return "h"  # hearts: red
+
+
+# Hero cards need a different test from the board's. Their suit is sampled
+# from the exposed left edge of a fanned card rather than a clean corner, and
+# the client dims them when a hand ends -- a dimmed diamond measured
+# (60,40,23), inside the navy brightness range, so the board's brightness test
+# calls it a spade. Ratios survive dimming where absolute levels do not: that
+# card's blue is 2.6x its red, matching the bright diamond's 2.8x, while hero
+# navy sits at 1.47-1.54.
+#
+# The board rule cannot simply adopt this: sampled from a corner, board navy
+# runs 2.25-2.5 and board blue 2.61, which ratios cannot separate. Two
+# sampling regions, two rules.
+_HERO_DIAMOND_BLUE_RATIO = 2.0
+
+
+def classify_hero_suit(bgr_mean):
+    b, g, r = bgr_mean
+    if r >= b and r >= g:
+        return "h"
+    if g >= b and g >= r:
+        return "c"
+    return "d" if b >= _HERO_DIAMOND_BLUE_RATIO * max(r, 1.0) else "s"
 
 
 def _sample_bg_color(card_crop):
@@ -197,7 +224,7 @@ def parse_hero_card(card_crop):
     """
     if not is_card_present(card_crop):
         return None
-    suit = classify_suit(sample_face_color(card_crop))
+    suit = classify_hero_suit(sample_face_color(card_crop))
     rank = read_rank_from_top(card_crop)
     if rank is None:
         return None

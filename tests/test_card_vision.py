@@ -54,3 +54,20 @@ def test_an_unobstructed_card_reads_the_same_either_way():
     card = np.full((170, 115, 3), (160, 60, 40), dtype=np.uint8)   # blue: diamonds
 
     assert card_vision.classify_suit(card_vision.sample_face_color(card)) == "d"
+
+
+def test_a_dimmed_hero_card_keeps_its_suit():
+    # When a hand ends the client dims the cards. Absolute brightness then
+    # drops a blue diamond into the navy range and it reads as a spade --
+    # measured on a real frame, (60,40,23) for a 5 of diamonds. Channel
+    # ratios survive dimming: that card's b/r is 2.62, right alongside the
+    # bright one's 2.84, while real navy sits at 1.47-1.54.
+    assert card_vision.classify_hero_suit((60, 40, 23)) == "d"     # dimmed diamond
+    assert card_vision.classify_hero_suit((148, 98, 52)) == "d"    # bright diamond
+    assert card_vision.classify_hero_suit((29, 20, 19)) == "s"     # dimmed spade
+    assert card_vision.classify_hero_suit((54, 40, 37)) == "s"     # bright spade
+
+
+def test_hero_suits_are_told_apart_by_which_channel_leads():
+    assert card_vision.classify_hero_suit((47, 44, 80)) == "h"     # red leads
+    assert card_vision.classify_hero_suit((34, 55, 31)) == "c"     # green leads

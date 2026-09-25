@@ -239,6 +239,29 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   effectively free. Don't swap it for a faster one without first changing
   what makes this cheap.
 
+- **Hero suits go by channel ratio; board suits go by brightness. Two
+  sampling regions, two rules.** The client dims cards when a hand ends, and a
+  dimmed diamond measured (60,40,23) -- inside the navy brightness range, so
+  the board's brightness test called it a spade. Its blue is still 2.6x its
+  red, matching a bright diamond's 2.8x, while hero navy sits at 1.47-1.54:
+  ratios survive dimming, absolute levels do not. The board rule cannot adopt
+  this, because sampled from a clean corner its navy runs 2.25-2.5 against
+  blue at 2.61 and ratios cannot separate those. Swept over 169 hero cards, 56
+  suits changed, and against every hand checked by eye the result is **20/20
+  suits correct**, up from 14/20.
+
+- **The display drops stale frames; the pipe is not a queue you want.** The
+  helper emits on every screen change, far faster than a frame parses (~129ms
+  now, with board matching, stack recovery and hole cards). Consuming the pipe
+  in order meant an unbounded backlog, so the lag grew without limit and the
+  table on screen drifted minutes behind the game. `newest_first` drains what
+  piled up and renders only the latest, which bounds the lag at one parse
+  whatever the capture rate. `start poker` also throttles the helper to 0.5s,
+  since each emitted frame costs it ~300ms of Vision and PNG work that the
+  display cannot use. **An earlier note here said no queue was needed because
+  python cost 0.15ms against the helper's 90ms. That stopped being true the
+  moment this side started doing real work.**
+
 - **A fanned card's suit comes from its left edge, not its centre.** The two
   hero cards overlap, so the one behind has its middle covered by the one in
   front and a centre sample averages the two: it called a 9 of spades a

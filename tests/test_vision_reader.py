@@ -892,12 +892,20 @@ def test_reads_hero_cards_out_of_the_strip():
                            interpolation=cv2.INTER_NEAREST)
         target = frame_img[y1 + 14:y1 + 80, x1 + 16:x1 + 68]
         target[glyph > 127] = (255, 255, 255)
-        cv2.circle(frame_img, ((x1 + x2) // 2, y2 - 55), 44, (255, 255, 255), -1)
-        # Detail below the rank, not around it: read_rank_from_top crops the
-        # upper part of the card, so a full border reads as part of the glyph
-        # and turned the A into a T.
-        cv2.rectangle(frame_img, (x1 + 4, y1 + (y2 - y1) // 2), (x2 - 5, y2 - 4),
-                      (245, 245, 245), 3)
+        # The pip must stay clear of the left band sample_face_color averages.
+        # Drawn oversized it reached into that band and washed the blue toward
+        # white, turning the diamond into a spade -- a fixture artefact; real
+        # pips do not sit that far left on a fanned card.
+        cv2.circle(frame_img, ((x1 + x2) // 2 + 12, y2 - 48), 28,
+                   (255, 255, 255), -1)
+        # Detail confined to the bottom of the card. It has to be below the
+        # rank, because read_rank_from_top crops the upper part and a border
+        # there reads as part of the glyph (it turned the A into a T). It also
+        # has to be below the middle, because sample_face_color averages the
+        # left-middle band and white bleeding into that washes the suit colour
+        # toward grey (it turned the diamond into a spade).
+        cv2.rectangle(frame_img, (x1 + 4, y1 + int((y2 - y1) * 0.80)),
+                      (x2 - 5, y2 - 4), (245, 245, 245), 3)
 
     rect = (0.55, 0.74, 0.30, 0.15)
     sx, sy = int(rect[0] * 1640), int(rect[1] * 2360)
