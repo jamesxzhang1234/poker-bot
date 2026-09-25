@@ -25,7 +25,8 @@ from pathlib import Path
 
 from collections import namedtuple
 
-from . import dashboard, hero_cards, seat_anchors, vision_reader
+from . import dashboard, hero_cards, position_tracker as position_tracking, \
+    seat_anchors, vision_reader
 from .session import DEFAULT_SESSION_FILE, parse_blinds, write_session_info
 from .table_state import is_plausible_table
 from .text_summary import format_summary
@@ -64,7 +65,8 @@ def anchors_for(width, height):
     return layout.anchors if layout else None
 
 
-def iter_states(lines, anchors=None, on_error=None, hero_tracker=None):
+def iter_states(lines, anchors=None, on_error=None, hero_tracker=None,
+                position_tracker=None):
     """Yield a TableState for each usable payload line.
 
     A bad line is reported and skipped, never raised: a truncated or
@@ -115,6 +117,12 @@ def iter_states(lines, anchors=None, on_error=None, hero_tracker=None):
             for seat in state.seats:
                 if seat.is_hero:
                     seat.hole_cards = list(cards)
+
+        # Positions are worked out pre-flop, while the blind badges are drawn,
+        # and held for the rest of the hand. See position_tracker for why.
+        if position_tracker is not None:
+            position_tracker.update(
+                state.seats, signature=vision_reader.hero_signature(frame))
 
         yield state
 
@@ -335,7 +343,8 @@ def newest_first(stream, on_drop=None):
 
 
 def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
-                  on_state=None, status_of=None, hero_tracker=None):
+                  on_state=None, status_of=None, hero_tracker=None,
+                  position_tracker=None):
     """Render each frame in place. Returns how many frames were drawn.
 
     Nothing in here is allowed to end the session. A bad line on stdout, a
@@ -346,8 +355,11 @@ def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
     drawn = 0
     if hero_tracker is None:
         hero_tracker = hero_cards.HeroCardTracker()
+    if position_tracker is None:
+        position_tracker = position_tracking.PositionTracker()
     for state in iter_states(lines, on_error=lambda m: None,
-                             hero_tracker=hero_tracker):
+                             hero_tracker=hero_tracker,
+                             position_tracker=position_tracker):
         # Tabbing away from the app, or a full-screen modal, yields a frame
         # with no table in it. Hold the last real one rather than blanking the
         # display -- but redraw it marked HELD, so a stale table is never
