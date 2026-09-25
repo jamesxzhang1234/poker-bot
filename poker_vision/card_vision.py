@@ -279,6 +279,18 @@ def read_rank_from_top(card_crop, top_fractions=(0.4, 0.45, 0.5, 0.55, 0.6, 0.65
         return "T"
 
     # Cut the glyph out and read that alone -- see isolate_rank_glyph.
+    #
+    # Read with Tesseract, not the templates, and this was measured rather
+    # than assumed. On a fanned card the templates separate badly: their top
+    # score sits at 0.62-0.66 with a margin of 0.01-0.03 over the runner-up,
+    # so the right answer and two wrong ones are indistinguishable. Across
+    # hands checked by eye Tesseract reads 20/21 against the templates' 16.
+    # A live 8 of spades that Tesseract called a 3 is the one it loses, and
+    # preferring templates to fix it broke three other cards.
+    #
+    # Note this is the opposite of the BOARD, where templates win outright --
+    # those cards are flat and unobstructed, so the same glyph shape scores
+    # 0.85-0.99 with room to spare.
     glyph = isolate_rank_glyph(card_crop)
     if glyph is not None:
         rank = _read_isolated(glyph)

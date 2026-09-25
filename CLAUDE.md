@@ -247,6 +247,21 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   effectively free. Don't swap it for a faster one without first changing
   what makes this cheap.
 
+- **Board ranks: locate the glyph, don't assume a corner. Hero ranks: the
+  opposite reader wins.** The board slots drift right of the cards by the
+  fifth position, so the river's rank falls outside the fixed corner box and
+  went unread -- costing the whole river card on a live hand. `best_rank` now
+  tries the located glyph as well and keeps the best score; the river reads
+  7@0.85 where the corner gave nothing, and every other slot scores higher
+  too (0.85-0.99).
+  **But do not carry that to hero cards.** Measured: on a fanned card the
+  templates score 0.62-0.66 with a 0.01-0.03 margin over the runner-up, so
+  right and wrong are indistinguishable, and Tesseract reads 20/21 of the
+  hands checked by eye against the templates' 16. Preferring templates fixed
+  one live 8-of-spades and broke three other cards. Board cards are flat and
+  unobstructed; hero cards are fanned and overlapping. Same glyph shape,
+  opposite answer.
+
 - **A board is 0, 3, 4 or 5 cards. One or two is a misread, not a partial
   truth.** Mid-deal the flop slides in and the cards sit briefly offset from
   their slots; a real frame read "7c Qh" that way, two cards with one of them

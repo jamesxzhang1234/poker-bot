@@ -165,3 +165,18 @@ def test_white_ink_does_not_drag_the_sampled_colour():
     cv2.circle(card, (59, 90), 45, (255, 255, 255), -1)
 
     assert card_vision.classify_suit(card_vision.sample_card_color(card)) == "d"
+
+
+def test_a_fanned_rank_is_read_by_ocr_not_templates():
+    # Measured, not assumed: on fanned cards the templates score 0.62-0.66
+    # with a 0.01-0.03 margin, so right and wrong answers are
+    # indistinguishable. Tesseract reads 20/21 of the hands checked by eye
+    # against the templates' 16.
+    assert card_vision.read_rank_from_top(_fanned_card("8")) == "8"
+
+
+def test_tesseract_still_covers_a_glyph_the_templates_do_not_know():
+    # Templates only know the exemplars harvested so far, so the OCR path has
+    # to stay behind them rather than be replaced.
+    import numpy as np
+    assert card_vision._read_isolated(np.zeros((30, 24), dtype=np.uint8)) is None

@@ -133,3 +133,33 @@ def test_a_flop_is_kept():
 
 def test_a_single_card_is_rejected_too():
     assert board_reader.read_board(_frame(["5s"]), SLOTS, RANK_OFFSET) == []
+
+
+def test_a_card_offset_within_its_slot_is_still_read():
+    # The board slots drift right of the cards by the fifth position, so the
+    # rank glyph falls outside the fixed corner box and the river went unread
+    # -- costing the whole river card on a live hand. Locating the glyph
+    # instead of assuming where it sits removes the dependence on the slot
+    # being perfectly aligned.
+    import cv2
+    import numpy as np
+    from poker_vision import rank_templates
+    frame = np.zeros((200, 10 + 5 * 140, 3), dtype=np.uint8)
+    frame[:] = (90, 60, 30)
+    templates = rank_templates.load()
+    for i, rank in enumerate(["5", "Q", "7"]):
+        x1, y1, x2, y2 = SLOTS[i]
+        frame[y1:y2, x1:x2] = SUIT_BGR["c"]
+        cv2.circle(frame, ((x1 + x2) // 2, y1 + 115), 34, (255, 255, 255), -1)
+        gx1, gy1, gx2, gy2 = RANK_OFFSET
+        glyph = cv2.resize(templates[rank][0], (gx2 - gx1, gy2 - gy1),
+                           interpolation=cv2.INTER_NEAREST)
+        # the last card sits shifted, as the real fifth slot does
+        shift = 26 if i == 2 else 0
+        region = frame[y1 + gy1:y1 + gy2, x1 + gx1 + shift:x1 + gx2 + shift]
+        region[glyph > 127] = (255, 255, 255)
+
+    board = board_reader.read_board(frame, SLOTS, RANK_OFFSET)
+
+    assert len(board) == 3, board
+    assert [c[0] for c in board] == ["5", "Q", "7"]
