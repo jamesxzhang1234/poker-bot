@@ -396,6 +396,18 @@ final class Supervisor {
     func tick() {
         let device = findDevice()
         if session != nil {
+            // Report liveness every tick, whether or not anything was
+            // emitted. The consumer sees only frames that got past the
+            // content-diff gate, which a static table suppresses for as long
+            // as the players are thinking -- so it cannot tell a quiet table
+            // from a dead capture, and guessing from the gap between frames
+            // marks a perfectly healthy table stale. Only this side knows,
+            // because only this side sees arrivals before the gate.
+            if let g = grabber {
+                let quiet = g.lastSample == Date.distantPast
+                    ? -1.0 : Date().timeIntervalSince(g.lastSample)
+                note(String(format: "heartbeat %.1f", quiet))
+            }
             if device == nil { stop("unplugged, or taken by another app") }
             else if let g = grabber,
                     Date().timeIntervalSince(g.lastSample) > STARVED_AFTER {

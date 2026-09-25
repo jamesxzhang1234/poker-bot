@@ -188,10 +188,21 @@ def main():
     state = {"status": None, "frames": 0, "last": None, "fault": None}
     lock = threading.Lock()
 
+    heartbeat = Heartbeat()
+
     def watch_stderr():
         for raw in proc.stderr:
             message = raw.strip()
             if not message:
+                continue
+            # Liveness, not a status: the helper reports every tick whether
+            # or not anything happened, so showing these would bury the
+            # messages that actually need reading.
+            if message.startswith("heartbeat "):
+                try:
+                    heartbeat.beat(float(message.split(None, 1)[1]))
+                except (ValueError, IndexError):
+                    pass
                 continue
             with lock:
                 state["status"] = message
@@ -236,7 +247,8 @@ def main():
             run(proc.stdout, require_plausible=not args.all_frames)
         else:
             run_dashboard(newest_first(proc.stdout), draw=draw,
-                          on_state=remember, status_of=current_fault)
+                          on_state=remember, status_of=current_fault,
+                          liveness_of=heartbeat.fault)
     except KeyboardInterrupt:
         pass
     except Exception as exc:                # never end on a traceback
@@ -355,6 +367,57 @@ def newest_first(stream, on_drop=None):
 STALE_AFTER = 4.0
 
 
+# The helper's own starvation threshold, and how long it may go without
+# saying anything at all before we assume it is wedged rather than quiet. It
+# reports every 2s, so 8s is four missed reports.
+HELPER_STARVED_AFTER = 5.0
+HELPER_SILENT_AFTER = 8.0
+
+
+class Heartbeat:
+    """Liveness as the capture helper reports it, rather than as guessed here.
+
+    This side sees only frames that got past the helper's content-diff gate,
+    which a static table suppresses for as long as the players are thinking.
+    So the gap between arriving frames says nothing about whether capture is
+    healthy, and treating it as if it did made a quiet table flicker in and
+    out of HELD -- which teaches you to ignore the one warning that matters.
+
+    The helper tracks arrivals *before* the gate and reports every tick, so
+    it can tell the two apart. Three states worth naming: frames arriving
+    (fine, however static the screen), frames not arriving (the iPad is
+    asleep, locked, or taken by QuickTime), and the helper not reporting at
+    all (it died or wedged, which its own watchdog cannot tell us about).
+    """
+
+    def __init__(self, starved_after=HELPER_STARVED_AFTER,
+                 silent_after=HELPER_SILENT_AFTER, now=time.monotonic):
+        self._starved_after = starved_after
+        self._silent_after = silent_after
+        self._now = now
+        self._last_beat = None
+        self._quiet = 0.0
+
+    def beat(self, quiet):
+        """Record a report: `quiet` is seconds since the helper last had a
+        frame, or negative if it has not had one yet."""
+        self._last_beat = self._now()
+        self._quiet = quiet
+
+    def fault(self):
+        """A reason the display should be marked stale, or None."""
+        if self._last_beat is None:
+            # Nothing heard yet. Startup, or a replayed stream with no helper
+            # behind it; either way there is nothing to disown.
+            return None
+        if self._now() - self._last_beat > self._silent_after:
+            return "capture helper stopped reporting -- restart start poker"
+        if self._quiet > self._starved_after:
+            return ("no frames arriving -- is the iPad awake and unlocked, "
+                    "and is QuickTime closed?")
+        return None
+
+
 class StaleWatch:
     """Whether the display is showing a frame old enough to disown.
 
@@ -386,7 +449,7 @@ class StaleWatch:
 def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
                   on_state=None, status_of=None, hero_tracker=None,
                   position_tracker=None, stale_after=STALE_AFTER,
-                  stale_poll=1.0):
+                  stale_poll=1.0, liveness_of=None):
     """Render each frame in place. Returns how many frames were drawn.
 
     Nothing in here is allowed to end the session. A bad line on stdout, a
@@ -409,12 +472,24 @@ def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
         # exists because "no frame arrived" cannot be noticed by a loop that
         # only runs when one does.
         while not finished.wait(stale_poll):
-            if not watch.ever_arrived or not watch.overdue():
+            if not watch.ever_arrived:
                 continue
+            if liveness_of is not None:
+                # The helper knows whether frames are arriving; this side
+                # only knows whether any got past its content-diff gate. Ask.
+                reason = liveness_of()
+                if reason is None:
+                    continue
+            else:
+                # No helper behind the stream (a replay). Fall back to the
+                # gap between frames, which is all there is to go on.
+                if not watch.overdue():
+                    continue
+                reason = None
             with lock:
                 if previous is None:
                     continue
-                reported = status_of() if status_of else None
+                reported = reason or (status_of() if status_of else None)
                 try:
                     draw(dashboard.render(
                         previous, frames=drawn,

@@ -408,3 +408,56 @@ def test_a_reported_fault_is_preferred_when_the_stream_goes_quiet():
                               stale_after=0.05, stale_poll=0.02)
 
     assert any("unlock the iPad screen" in s for s in shown)
+
+
+def test_a_quiet_table_is_not_stale_while_the_helper_reports_frames_arriving():
+    # The bug this exists for. The helper emits only when screen content
+    # changes, so a table where everyone is thinking produces nothing for
+    # many seconds -- and the display flickered in and out of HELD, which
+    # teaches you to ignore the one warning that matters. Frames are still
+    # arriving; they are just identical. Only the helper can tell, because
+    # only the helper sees arrivals before the content-diff gate.
+    import time as _time
+
+    def one_frame_then_quiet():
+        yield _payload(index=0)
+        _time.sleep(0.4)
+
+    shown = []
+    vision_live.run_dashboard(one_frame_then_quiet(), draw=shown.append,
+                              liveness_of=lambda: None,      # helper says all is well
+                              stale_after=0.05, stale_poll=0.02)
+
+    assert not any("HELD" in s for s in shown), "a quiet table was called stale"
+
+
+def test_the_helper_saying_it_is_starved_marks_the_display_stale():
+    import time as _time
+
+    def one_frame_then_quiet():
+        yield _payload(index=0)
+        _time.sleep(0.4)
+
+    shown = []
+    vision_live.run_dashboard(one_frame_then_quiet(), draw=shown.append,
+                              liveness_of=lambda: "no frames arriving -- unlock the iPad screen",
+                              stale_after=0.05, stale_poll=0.02)
+
+    assert any("unlock the iPad screen" in s for s in shown)
+
+
+def test_liveness_from_the_helpers_heartbeat():
+    clock = [100.0]
+    h = vision_live.Heartbeat(starved_after=5.0, silent_after=8.0,
+                              now=lambda: clock[0])
+
+    assert h.fault() is None, "nothing heard yet is not yet a fault"
+
+    h.beat(quiet=0.2); assert h.fault() is None          # frames flowing
+    h.beat(quiet=1.9); assert h.fault() is None          # static table, still fine
+    h.beat(quiet=6.0)
+    assert "no frames arriving" in h.fault()             # genuinely starved
+
+    h.beat(quiet=0.1); assert h.fault() is None          # recovered
+    clock[0] += 9.0
+    assert "capture helper" in h.fault()                 # helper itself went silent
