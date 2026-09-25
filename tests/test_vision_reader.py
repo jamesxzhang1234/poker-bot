@@ -1089,3 +1089,84 @@ def test_a_handle_that_merely_starts_with_a_letter_is_kept():
     obs = [_obs("Sitty", 404, 895), _obs("9.45", 404, 951)]
 
     assert len(vision_reader.find_seat_plates(obs, 1640, 2360)) == 1
+
+
+def test_a_player_whose_handle_is_all_digits_still_gets_a_seat():
+    # Found live: a player whose username is a number vanished from the
+    # dashboard, and the username turned up as a stack. find_seat_plates
+    # refuses any candidate that parses as an amount -- "an amount is never a
+    # handle" -- which is true of the chrome it was written for and false of
+    # this player. Both of that seat's rows are numeric, so no plate formed,
+    # while the username stayed eligible as somebody's stack.
+    import json
+    from poker_vision import seat_anchors
+
+    ax, ay = seat_anchors.IPAD_PORTRAIT["top_left"]
+    bx, by = seat_anchors.IPAD_PORTRAIT["mid_left"]
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "observations": [
+            {"text": "760", "x": ax, "y": ay, "w": 90, "h": 30, "confidence": 1.0},
+            {"text": "12.5", "x": ax, "y": ay + 54, "w": 80, "h": 30, "confidence": 1.0},
+            {"text": "Term48", "x": bx, "y": by, "w": 120, "h": 30, "confidence": 1.0},
+            {"text": "4.55", "x": bx, "y": by + 54, "w": 80, "h": 30, "confidence": 1.0},
+        ],
+    })
+
+    state = vision_reader.build_table_state(payload, seat_anchors.IPAD_PORTRAIT)
+    by_id = {s.seat_id: s for s in state.seats}
+
+    assert "top_left" in by_id, "the numeric-handle seat went missing"
+    assert by_id["top_left"].name == "760"
+    assert by_id["top_left"].stack == 12.5
+    # and the ordinary seat beside it is untouched
+    assert by_id["mid_left"].name == "Term48"
+    assert by_id["mid_left"].stack == 4.55
+
+
+def test_the_pot_is_not_turned_into_a_seat_by_that_relaxation():
+    # The rule being relaxed is what keeps chrome out. The pot is two stacked
+    # numbers just like a numeric-handle seat, so something other than the
+    # text has to reject it -- here assign_to_seats, which drops any plate
+    # that lands nowhere near a seat anchor.
+    import json
+    from poker_vision import seat_anchors
+
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "observations": [
+            {"text": "2.05", "x": 820, "y": 900, "w": 80, "h": 30, "confidence": 1.0},
+            {"text": "2.45", "x": 820, "y": 954, "w": 80, "h": 30, "confidence": 1.0},
+        ],
+    })
+
+    state = vision_reader.build_table_state(payload, seat_anchors.IPAD_PORTRAIT)
+
+    assert [s.seat_id for s in state.seats] == [], "centre-table chrome became a seat"
+
+
+def test_an_ocr_fragment_does_not_win_a_seat_from_a_numeric_handle():
+    # The live failure in full. Vision read a fragment ("de") above the
+    # handle "000707", and because float() makes that username 707.0 the
+    # fragment paired with it into a seat holding 707 chips at a 0.05/0.10
+    # table -- while the real player was nowhere. Both are handles as far as
+    # the text can say, so the seat anchor settles it: the real handle sits
+    # on the anchor and the fragment was 68px off.
+    import json
+    from poker_vision import seat_anchors
+
+    ax, ay = seat_anchors.IPAD_PORTRAIT["mid_left"]
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "observations": [
+            {"text": "de", "x": ax, "y": ay - 68, "w": 40, "h": 30, "confidence": 1.0},
+            {"text": "000707", "x": ax, "y": ay, "w": 110, "h": 30, "confidence": 1.0},
+            {"text": "11.2", "x": ax, "y": ay + 54, "w": 80, "h": 30, "confidence": 1.0},
+        ],
+    })
+
+    state = vision_reader.build_table_state(payload, seat_anchors.IPAD_PORTRAIT)
+    seat = {s.seat_id: s for s in state.seats}["mid_left"]
+
+    assert seat.name == "000707", "an OCR fragment beat the real handle"
+    assert seat.stack == 11.2, "the username was read as the stack"

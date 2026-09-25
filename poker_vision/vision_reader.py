@@ -266,6 +266,68 @@ def find_seat_plates(observations, width, height):
     return plates
 
 
+def numeric_handle_plates(observations, anchors, width, height):
+    """Seat plates whose handle is itself a number.
+
+    find_seat_plates refuses any candidate that parses as an amount, because
+    an amount above an amount is what the pot and the blind level look like.
+    It is also what a player whose username is digits looks like. Live, a
+    player called "000707" was missing from the table entirely: float() reads
+    that as 707.0, so it stayed eligible as somebody's stack, and an OCR
+    fragment above it ("de", "ce", "Ide") paired with it into a phantom seat
+    holding 707 chips at a 0.05/0.10 table.
+
+    Digits alone cannot settle it, so the seat anchor does. These plates are
+    returned to be judged alongside the ordinary ones, not merged over them:
+    assign_to_seats keeps whichever is closest to the anchor, and the real
+    handle sits on it -- measured, "000707" was 17px from its anchor while
+    the fragment that had been beating it was 68px away. That comparison is
+    what fixes the seat; simply offering the plate is enough.
+
+    The anchor test below is therefore a narrowing rather than a guard:
+    removing it changes no seat on either corpus, because assign_to_seats
+    discards anything too far from an anchor anyway. It is kept so this does
+    not manufacture plates for the pot and the blind level on every frame.
+    """
+    gap_min, gap_max = _PLATE_GAP_MIN * height, _PLATE_GAP_MAX * height
+    x_tol = _PLATE_X_TOL * width
+    radius = _ANCHOR_RADIUS * ((width ** 2 + height ** 2) ** 0.5)
+    trusted = [o for o in observations if o.confidence >= _MIN_CONFIDENCE]
+
+    plates = []
+    for candidate in trusted:
+        if parse_amount(candidate.text) is None:
+            continue                      # this pass is only for numeric handles
+        if not _is_handle(candidate.text):
+            continue                      # "2x", "100%", "+30s"
+        # On a seat anchor, which is where a handle sits -- a stack sits a
+        # row below one. See the note above: this narrows what is offered,
+        # it is not what decides the seat.
+        on_anchor = any(
+            abs(candidate.y - ay) <= gap_max
+            and ((candidate.x - ax) ** 2 + (candidate.y - ay) ** 2) ** 0.5 <= radius
+            for ax, ay in anchors.values()
+        )
+        if not on_anchor:
+            continue
+        below = []
+        for other in trusted:
+            value = parse_amount(other.text)
+            if value is None:
+                continue
+            if not gap_min <= other.y - candidate.y <= gap_max:
+                continue
+            if abs(other.x - candidate.x) > x_tol:
+                continue
+            below.append((other, value))
+        if not below:
+            continue
+        _, value = min(below, key=lambda ov: ov[0].y - candidate.y)
+        plates.append(SeatPlate(name=candidate.text, stack=value,
+                                x=candidate.x, y=candidate.y))
+    return plates
+
+
 def _amount_below(anchor, observations, width, height, gap_max=_PLATE_GAP_MAX):
     """The nearest amount rendered directly beneath `anchor`, or None."""
     gap_min = _PLATE_GAP_MIN * height
@@ -453,6 +515,11 @@ def build_table_state(payload, anchors, board_slots=None, rank_offset=None,
     """
     frame = parse_payload(payload)
     plates = find_seat_plates(frame.observations, frame.width, frame.height)
+    # Judged alongside the ordinary plates rather than after them, so the
+    # closest-to-anchor rule can prefer a real numeric handle over an OCR
+    # fragment that had paired with it. See numeric_handle_plates.
+    plates += numeric_handle_plates(frame.observations, anchors,
+                                    frame.width, frame.height)
     assigned = assign_to_seats(plates, anchors, frame.width, frame.height)
     statuses = find_statuses(frame.observations, frame.width, frame.height)
     badges = find_badges(frame.observations, frame.width, frame.height)
