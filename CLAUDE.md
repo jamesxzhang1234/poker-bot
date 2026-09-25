@@ -362,16 +362,38 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   glyph width/height test failed because component extraction misses dim and
   green cards.
 
-- **Hero suits go by channel ratio; board suits go by brightness. Two
-  sampling regions, two rules.** The client dims cards when a hand ends, and a
-  dimmed diamond measured (60,40,23) -- inside the navy brightness range, so
-  the board's brightness test called it a spade. Its blue is still 2.6x its
-  red, matching a bright diamond's 2.8x, while hero navy sits at 1.47-1.54:
-  ratios survive dimming, absolute levels do not. The board rule cannot adopt
-  this, because sampled from a clean corner its navy runs 2.25-2.5 against
-  blue at 2.61 and ratios cannot separate those. Swept over 169 hero cards, 56
-  suits changed, and against every hand checked by eye the result is **20/20
-  suits correct**, up from 14/20.
+- **Neither suit rule may key on brightness. Two sampling regions, two
+  rules, both scale-free.** The client dims cards when a hand ends, and that
+  breaks any absolute level. On hero cards a dimmed diamond measured
+  (60,40,23), inside the navy brightness range, so the board's old brightness
+  test called it a spade; its blue is still 2.6x its red, matching a bright
+  diamond's 2.8x, while hero navy sits at 1.47-1.54. The board rule was left
+  on brightness at the time and later failed the same way: a dimmed club
+  measured 79 and a dimmed diamond 78 against a spade cutoff of 80, and a
+  showdown board read "As 7c Jc 6s 5s" for Ac 7c Jc 6s 8c. It now asks the
+  dominant-channel questions first -- a club stays green-dominant and a heart
+  red-dominant however far they dim -- and settles spades against diamonds on
+  the difference b-r, not a ratio: a ratio separates the iPad but not the
+  iPhone, whose blue sits at 2.61 against a navy of 2.28, while b-r splits
+  both devices (navy 7-25, diamonds 59-113). Hero suits: **20/20**, up from
+  14/20. Board suits: every one of 16 labelled boards, up from 5/16.
+
+- **Derived pixel geometry is a guess; measure it off real frames.** The iPad
+  board slots were derived as pitch 136 / width 118 and looked right, because
+  the error only shows at the far end: the real pitch is 132 and width 125,
+  so the fifth slot sat 17px right of its card. Single-character ranks
+  survived the clipping and hid the bug; "10" lost its "1" and the bare "0"
+  matched Q. Finding the card edges against the felt across seven real boards
+  settled it in one pass. When a reader works on the left of a row and fails
+  on the right, suspect accumulated pitch error before suspecting the glyph.
+
+- **"10" is the only rank drawn as two characters, and every
+  single-component assumption breaks on it.** `isolate_rank_glyph` returns
+  one blob, so a board ten came back as its "1" and scored as a J;
+  `_extract_rank` had to special-case the string; the fixed corner box catches
+  both characters plus the suit pip, which is too large for the fragment
+  filter. `isolate_rank_pair` supplies the two-character candidate to the
+  board path. Whenever a rank change misbehaves, check the ten first.
 
 - **The display drops stale frames; the pipe is not a queue you want.** The
   helper emits on every screen change, far faster than a frame parses (~129ms
