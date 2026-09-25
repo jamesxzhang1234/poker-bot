@@ -539,3 +539,104 @@ def test_unread_positions_are_inferred_from_one_detected_badge():
     assert positions["hero"] == "SB"
     # every occupied seat ends up with a position, not just the badged one
     assert all(p is not None for p in positions.values()), positions
+
+
+def test_a_seat_whose_stack_is_occluded_is_still_reported():
+    # A bet-sizing panel over a seat leaves the handle readable and the stack
+    # cut off ("19." of "19.45"). Dropping the plate loses the player
+    # entirely; reporting them with an unknown stack says what is actually
+    # known. Real coordinates from frames/ipad/ipad_015.png.
+    obs = [_obs("trill04", 1183, 1721), _obs("19.", 1188, 1780)]
+
+    plates = vision_reader.find_seat_plates(obs, width=1640, height=2360)
+
+    assert len(plates) == 1
+    assert plates[0].name == "trill04"
+    assert plates[0].stack is None
+
+
+def test_a_handle_with_nothing_beneath_it_is_not_a_seat():
+    # Distinguishes an occluded stack from a stray word that merely sits
+    # where a handle would.
+    obs = [_obs("trill04", 1183, 1721)]
+
+    assert vision_reader.find_seat_plates(obs, width=1640, height=2360) == []
+
+
+def test_a_handle_over_non_numeric_text_is_not_a_seat():
+    obs = [_obs("trill04", 1183, 1721), _obs("Straddle", 1188, 1780)]
+
+    assert vision_reader.find_seat_plates(obs, width=1640, height=2360) == []
+
+
+def test_an_occluded_seat_reaches_the_table_state_with_no_stack():
+    import json
+    from poker_vision import seat_anchors
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "observations": [
+            {"text": "trill04", "x": 1183, "y": 1721, "w": 93, "h": 28, "confidence": 1.0},
+            {"text": "19.", "x": 1188, "y": 1780, "w": 54, "h": 30, "confidence": 1.0},
+        ],
+    })
+
+    state = vision_reader.build_table_state(payload, seat_anchors.IPAD_PORTRAIT)
+
+    seat = [s for s in state.seats if s.seat_id == "bottom_right"][0]
+    assert seat.name == "trill04"
+    assert seat.stack is None
+
+
+def test_a_badge_read_with_a_lookalike_character_still_counts():
+    # Vision returned "вB" on a real iPhone frame -- a Cyrillic ve standing in
+    # for the first B. One badge is all the position inference needs, so
+    # losing it to a single wrong codepoint costs the whole table's positions.
+    obs = [_obs("вB", 924, 1689), _obs("jxz", 814, 1920), _obs("27.8", 820, 1980)]
+
+    badges = vision_reader.find_badges(obs, width=1640, height=2360)
+
+    assert badges == {("jxz", 814, 1920): "BB"}
+
+
+def test_lookalike_folding_does_not_invent_badges_from_other_text():
+    for text in ["8", "5", "0", "13", "6.3", "BET"]:
+        obs = [_obs(text, 924, 1689), _obs("jxz", 814, 1920), _obs("27.8", 820, 1980)]
+        assert vision_reader.find_badges(obs, width=1640, height=2360) == {}, text
+
+
+def test_reports_plates_that_match_no_seat_anchor():
+    # A plate landing nowhere near a known anchor means the layout has a seat
+    # this device's anchor set doesn't describe -- iPad bottom_left is a
+    # mirrored guess nobody has sat in yet. Silently dropping it hides that;
+    # surfacing it turns a missing player into a visible gap.
+    plates = [
+        vision_reader.SeatPlate("drake81", 7.75, 511, 565),
+        vision_reader.SeatPlate("mystery", 3.0, 445, 1721),
+    ]
+    anchors = {"top_left": (511, 565)}
+
+    orphans = vision_reader.plates_without_seat(plates, anchors, width=1640, height=2360)
+
+    assert [p.name for p in orphans] == ["mystery"]
+
+
+def test_no_orphans_when_every_plate_lands_on_an_anchor():
+    plates = [vision_reader.SeatPlate("drake81", 7.75, 511, 565)]
+    anchors = {"top_left": (511, 565)}
+
+    assert vision_reader.plates_without_seat(plates, anchors, 1640, 2360) == []
+
+
+def test_reads_an_amount_written_with_letter_lookalikes():
+    # Vision returned "IO" for a stack of 10 on a real frame. Capital I and
+    # lowercase l are the same shape as 1 in this UI's font, and O is the same
+    # shape as 0, so a single substitution loses the whole seat's stack.
+    assert vision_reader.parse_amount("IO") == 10.0
+    assert vision_reader.parse_amount("l0") == 10.0
+    assert vision_reader.parse_amount("2O.5") == 20.5
+
+
+def test_letter_folding_does_not_turn_words_into_amounts():
+    # Folding must not manufacture a number out of ordinary text.
+    for text in ["Invite", "All In", "Fold", "IOU", "LOL", "Total Pot", "NLH"]:
+        assert vision_reader.parse_amount(text) is None, text

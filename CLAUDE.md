@@ -199,6 +199,19 @@ phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)�
   backgrounds, 8 changed, all `d`->`s`, all the same navy card across
   consecutive frames of one hand, zero changes on the iPhone.
 
+- **Vision misses short isolated numbers, and this is its main accuracy gap.**
+  Adjudicating the 29 reads the Tesseract parser produced that the Vision path
+  did not: **19 were one-character values** -- a stack of "5" or "0" where
+  Vision read the handle above it and nothing else (`['BillWynn']`,
+  `['kpk']`, `['MrTxx']`). It is the same isolated-glyph weakness that costs
+  it card ranks and the bare "D" badge. It matters more here, because a stack
+  of 0 or 5 is exactly the interesting case. Fixing it needs pixels for the
+  stack rows, the way board_reader gets them for the board -- not a parsing
+  change. Of the rest: 4 were Tesseract reading the orange **Raise button** as
+  a `4.0` stack at an empty seat, 2 were Tesseract reading a **Microsoft Teams
+  notification** overlaying the screen (`24.087`, `1.1`), and 1 was Vision
+  reading "IO" for 10, now folded.
+
 - **Vision never returns a bare "D".** A single character is too isolated for
   its text detector, so only "SB" and "BB" arrive. That is enough: one badge
   anchors `parser.infer_positions`, which rotates the rest of the table into

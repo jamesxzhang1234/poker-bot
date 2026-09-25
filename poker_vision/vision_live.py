@@ -84,6 +84,18 @@ def iter_states(lines, anchors=None, on_error=None):
             if on_error:
                 on_error(f"no layout for {frame.width}x{frame.height}")
             continue
+        # A plate that lands on no anchor means this device's layout has a
+        # seat we do not describe. Say so: the alternative is a player who
+        # quietly never appears in the output.
+        if on_error:
+            orphans = vision_reader.plates_without_seat(
+                vision_reader.find_seat_plates(frame.observations,
+                                               frame.width, frame.height),
+                chosen, frame.width, frame.height)
+            for plate in orphans:
+                on_error(f"plate matches no seat anchor: "
+                         f"{plate.name!r} at ({plate.x},{plate.y})")
+
         yield vision_reader.build_table_state(
             line, chosen,
             board_slots=layout.board_slots if layout else None,

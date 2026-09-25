@@ -89,6 +89,13 @@ def parse_payload(payload):
 # of those as a stack would invent money that isn't on the table.
 _AMOUNT_RE = re.compile(r"^\d+(?:\.\d+)?$")
 
+# Letters that are the same shape as a digit in this UI's font. Vision
+# returned "IO" for a stack of 10 on a real frame, and one substitution costs
+# the whole seat's stack. Folding happens before the match above, so the
+# result still has to be a bare amount end to end -- "IOU" folds to "10U" and
+# is refused, the same as any other word.
+_DIGIT_LOOKALIKES = str.maketrans({"I": "1", "l": "1", "|": "1", "O": "0"})
+
 
 def parse_amount(text):
     """Parse a recognised string as a table amount, or None if it isn't one.
@@ -102,7 +109,7 @@ def parse_amount(text):
     """
     if text is None:
         return None
-    candidate = text.strip()
+    candidate = text.strip().translate(_DIGIT_LOOKALIKES)
     if not _AMOUNT_RE.match(candidate):
         return None
     return float(candidate)
@@ -151,9 +158,23 @@ def _is_handle(text):
     return True
 
 
+# Text in the stack row that holds digits but is not a clean amount. That is
+# what an occluded stack looks like: something on screen covers part of the
+# number and Vision reads the visible fragment ("19." of "19.45"). Worth
+# telling apart from ordinary chrome, because the seat is real even when its
+# stack is not readable.
+_HAS_DIGIT = re.compile(r"\d")
+
+
 @dataclass
 class SeatPlate:
-    """A handle and the stack rendered directly beneath it."""
+    """A handle and the stack rendered directly beneath it.
+
+    `stack` is None when the amount is there but unreadable -- covered by a
+    bet-sizing panel, most often. The seat still exists, so it is still
+    reported; dropping the plate would lose the player altogether, which is a
+    worse answer than an unknown stack.
+    """
     name: str
     stack: float
     x: int               # taken from the name row, the wider of the two
@@ -171,8 +192,13 @@ def find_seat_plates(observations, width, height):
     x_tol = _PLATE_X_TOL * width
 
     trusted = [o for o in observations if o.confidence >= _MIN_CONFIDENCE]
-    amounts = [(o, parse_amount(o.text)) for o in trusted]
-    amounts = [(o, v) for o, v in amounts if v is not None]
+    # Anything numeric-looking in the stack row: a clean amount, or a fragment
+    # of one that something on screen is covering.
+    stack_row = [
+        (o, parse_amount(o.text))
+        for o in trusted
+        if parse_amount(o.text) is not None or _HAS_DIGIT.search(o.text)
+    ]
 
     plates = []
     for candidate in trusted:
@@ -181,7 +207,7 @@ def find_seat_plates(observations, width, height):
         if not _is_handle(candidate.text):
             continue
         below = [
-            (o, v) for o, v in amounts
+            (o, v) for o, v in stack_row
             if gap_min <= (o.y - candidate.y) <= gap_max
             and abs(o.x - candidate.x) <= x_tol
         ]
@@ -228,6 +254,26 @@ def find_pot(observations, width, height):
 # pairing found somewhere in the table chrome is dropped rather than snapped
 # onto whichever seat happens to be least far away.
 _ANCHOR_RADIUS = 0.055
+
+
+def plates_without_seat(plates, anchors, width, height):
+    """Plates that landed too far from every anchor to be assigned.
+
+    A non-empty result means this device's anchor set is missing a seat the
+    layout actually has -- iPad `bottom_left`, for instance, is a mirrored
+    estimate nobody has sat in yet. Dropping those silently hides the gap and
+    shows up later as a player who is simply absent from the output.
+    """
+    radius = _ANCHOR_RADIUS * ((width ** 2 + height ** 2) ** 0.5)
+    orphans = []
+    for plate in plates:
+        nearest = min(
+            (((plate.x - ax) ** 2 + (plate.y - ay) ** 2) ** 0.5
+             for ax, ay in anchors.values()),
+            default=float("inf"))
+        if nearest > radius:
+            orphans.append(plate)
+    return orphans
 
 
 def assign_to_seats(plates, anchors, width, height):
@@ -365,6 +411,25 @@ def find_statuses(observations, width, height):
 # the table from any one badge.
 _BADGE_WORDS = {"d": "D", "sb": "SB", "bb": "BB"}
 
+# Cyrillic and Greek letters that render identically to the Latin ones the
+# badges use. Vision returned "вB" on a real frame -- a Cyrillic ve for the
+# first B -- and one wrong codepoint costs the whole table's positions, since
+# a single badge is what anchors the inference. Folding is deliberately
+# limited to characters that are visually identical: nothing here can turn a
+# digit or an ordinary word into a badge.
+_LOOKALIKES = str.maketrans({
+    "\u0432": "b", "\u0412": "B",      # Cyrillic ve
+    "\u0431": "b", "\u0411": "B",      # Cyrillic be
+    "\u0455": "s", "\u0405": "S",      # Cyrillic dze
+    "\u0501": "d", "\u0184": "b",      # Cyrillic komi de, Latin-ext
+    "\u0392": "B", "\u03f2": "s",      # Greek beta, lunate sigma
+})
+
+
+def _badge_word(text):
+    """The badge this string spells, folding lookalike letters, or None."""
+    return _BADGE_WORDS.get(text.strip().translate(_LOOKALIKES).lower())
+
 # A badge sits above its plate and off to one side, at 8.7-9.8% of the frame
 # diagonal on both devices (measured: 249-282px on the iPhone's 2886px
 # diagonal, 253-256px on the iPad's 2874px). Using distance rather than
@@ -388,7 +453,7 @@ def find_badges(observations, width, height):
     for o in observations:
         if o.confidence < _MIN_CONFIDENCE:
             continue
-        badge = _BADGE_WORDS.get(o.text.strip().lower())
+        badge = _badge_word(o.text)
         if badge is None:
             continue
         # Every badge renders above its own seat, so a plate above the badge

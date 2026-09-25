@@ -120,3 +120,35 @@ def test_states_carry_the_board_when_the_payload_has_a_strip():
     state = list(vision_live.iter_states([payload]))[0]
 
     assert state.board_cards == ["Kd", "9c"]
+
+
+def test_warns_about_a_plate_that_matches_no_seat():
+    # A player sitting in a seat this device's anchors don't describe should
+    # be visible as a warning, not silently missing from the output.
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "observations": [
+            {"text": "ghostplayer", "x": 445, "y": 1200, "w": 140, "h": 30, "confidence": 1.0},
+            {"text": "3.0", "x": 445, "y": 1257, "w": 60, "h": 30, "confidence": 1.0},
+        ],
+    })
+    warnings = []
+
+    list(vision_live.iter_states([payload], on_error=warnings.append))
+
+    assert any("ghostplayer" in w for w in warnings), warnings
+
+
+def test_no_warning_when_every_plate_lands_on_a_seat():
+    payload = json.dumps({
+        "frame_index": 0, "timestamp_sec": 0.0, "width": 1640, "height": 2360,
+        "observations": [
+            {"text": "drake81", "x": 511, "y": 565, "w": 123, "h": 29, "confidence": 1.0},
+            {"text": "7.75", "x": 509, "y": 620, "w": 72, "h": 34, "confidence": 1.0},
+        ],
+    })
+    warnings = []
+
+    list(vision_live.iter_states([payload], on_error=warnings.append))
+
+    assert warnings == []
