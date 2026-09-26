@@ -33,6 +33,20 @@ so when in doubt it shows none.
 CHANGE_THRESHOLD = 2000
 
 
+# A hold'em hand is two distinct cards. Anything else is a half-read or an
+# impossible one, and latching either shows it for the rest of the hand --
+# the tracker stops reading once it has an answer, so there is no second
+# chance. Measured across the live corpora, 22 pre-flop frames read exactly
+# one card against 191 that read both, so waiting costs a frame and buys the
+# missing card. Two of the same card has been seen too: a dimmed jack read
+# as a four, beside a real four.
+HOLE_CARDS = 2
+
+
+def _is_a_hand(cards):
+    return len(cards) == HOLE_CARDS and len(set(cards)) == HOLE_CARDS
+
+
 def _changed(a, b):
     if a is None or b is None or len(a) != len(b):
         return True
@@ -68,7 +82,7 @@ class HeroCardTracker:
             # before the cards are legible, and giving up there would lose them
             # for the whole hand.
             found = read() or []
-            if found:
+            if _is_a_hand(found):
                 self.cards = list(found)
                 self.read_this_hand = True
 

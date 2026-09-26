@@ -244,6 +244,21 @@ def isolate_rank_glyph(card_crop):
     return mask[y:y + bh, x:x + bw] * 255
 
 
+# Tallest a rank glyph may be, as a fraction of the card crop. The rank is
+# drawn in one fixed font, so this is a tight, stable property: measured over
+# 558 real hero glyphs, every one is 12-22% of its crop, and nothing at all
+# lands between 22% and 24%.
+#
+# It is here to reject the card back. During the deal the hero's cards arrive
+# face down, and the back's centred logo isolated at 24-38% and was then read
+# as a rank -- live, a back came back as "4s". That matters more than it
+# sounds: the deal is at preflop, which is exactly and only when
+# HeroCardTracker is allowed to read, so a back read once was latched for the
+# whole hand. The previous bound was 85% of the search window, i.e. 47% of
+# the crop, which let every one of them through.
+_MAX_GLYPH_HEIGHT = 0.23
+
+
 def _rank_components(card_crop):
     """(mask, parts) for the glyph-sized blobs in the card's top-left corner.
 
@@ -265,7 +280,7 @@ def _rank_components(card_crop):
         x, y = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP]
         bw, bh = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
         area = stats[i, cv2.CC_STAT_AREA]
-        if not (top.shape[0] * 0.20 <= bh <= top.shape[0] * 0.85):
+        if not (top.shape[0] * 0.20 <= bh <= _MAX_GLYPH_HEIGHT * h):
             continue
         if bw < 5 or area < 60 or area < 0.12 * bw * bh:
             continue
@@ -382,13 +397,17 @@ def read_rank_from_top(card_crop, top_fractions=(0.4, 0.45, 0.5, 0.55, 0.6, 0.65
         if rank is not None:
             return rank
 
-    # Isolation can come up empty on a card this has not seen; the original
-    # window cascade still stands behind it.
-    h = card_crop.shape[0]
-    for fraction in top_fractions:
-        rank = _ocr_rank_bright(card_crop[0:int(h * fraction), :])
-        if rank is not None:
-            return rank
+    # No isolable rank glyph means this is not a face-up card, and the right
+    # answer is to say so.
+    #
+    # A window cascade used to stand here, OCRing progressively larger slices
+    # of the card's top when isolation came up empty. It never rescued a real
+    # card -- isolation succeeds on all 16 labelled hero cards, the ten
+    # included -- and it reliably invented ranks for things that are not
+    # cards: during the deal it read the back's logo as "4s", and once the
+    # logo was rejected as a glyph it read the same card as "5s". The deal is
+    # at preflop, which is exactly and only when HeroCardTracker is allowed
+    # to read, so an invented rank there is latched for the whole hand.
     return None
 
 

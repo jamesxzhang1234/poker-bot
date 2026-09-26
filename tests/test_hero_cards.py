@@ -152,3 +152,37 @@ def test_a_clash_appearing_later_still_drops_them():
     tracker.update(["5s", "8h", "Qd"], read, SAME)
 
     assert tracker.update(["5s", "8h", "Qd", "Ad"], read, SAME) == []
+
+
+def test_a_half_read_hand_is_not_latched():
+    # The tracker latches the first non-empty read of a hand and then stops
+    # reading, so latching a single card shows half a hand for the rest of
+    # it, with no second chance. Measured across the live corpora, 22
+    # pre-flop frames read exactly one card against 191 that read both, so
+    # waiting costs a frame and buys the other card.
+    tracker = HeroCardTracker()
+    reads = [["Ad"], ["Ad", "Kc"]]
+
+    first = tracker.update([], read=lambda: reads[0], signature=[0])
+    assert first == [], "half a hand was shown as if it were the hand"
+
+    second = tracker.update([], read=lambda: reads[1], signature=[0])
+    assert second == ["Ad", "Kc"]
+
+
+def test_a_complete_pair_is_still_latched_at_once():
+    tracker = HeroCardTracker()
+
+    assert tracker.update([], read=lambda: ["Ad", "Kc"], signature=[0]) == ["Ad", "Kc"]
+    # and held once the board arrives, without reading again
+    assert tracker.update(["2h", "7d", "9s"],
+                          read=lambda: (_ for _ in ()).throw(AssertionError("re-read")),
+                          signature=[0]) == ["Ad", "Kc"]
+
+
+def test_two_of_the_same_card_is_not_a_hand():
+    # Impossible, and seen live: a dimmed jack read as a four beside a real
+    # four gave ["4s", "4s"]. Whichever card is wrong, the pair is not real.
+    tracker = HeroCardTracker()
+
+    assert tracker.update([], read=lambda: ["4s", "4s"], signature=[0]) == []

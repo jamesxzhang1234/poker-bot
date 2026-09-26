@@ -29,6 +29,13 @@ def _frame(cards):
     the rank glyph and, dominating it, a large suit pip. That white fraction
     is what tells a card apart from felt, so the fixture has to draw the pip
     too; a card with only its rank on it is not what the reader sees.
+
+    The rank is drawn at the size the device draws it: measured across the
+    live corpus, a real rank glyph is 11-22% of its card's height, median
+    19%. This fixture used to fill the whole RANK_OFFSET box, which is 27%,
+    and that is larger than any rank the iPad has ever rendered -- so it
+    kept passing when the reader started rejecting over-tall glyphs as card
+    backs, which is a real distinction drawn at 23%.
     """
     frame = np.zeros((200, 10 + 5 * 140, 3), dtype=np.uint8)
     frame[:] = (90, 60, 30)                      # felt
@@ -36,12 +43,14 @@ def _frame(cards):
     for i, card in enumerate(cards):
         rank, suit = card[0], card[1]
         x1, y1, x2, y2 = SLOTS[i]
+        slot_height = y2 - y1
         frame[y1:y2, x1:x2] = SUIT_BGR[suit]
         cv2.circle(frame, ((x1 + x2) // 2, y1 + 115), 34, (255, 255, 255), -1)  # suit pip
-        gx1, gy1, gx2, gy2 = RANK_OFFSET
-        glyph = cv2.resize(templates[rank][0], (gx2 - gx1, gy2 - gy1),
-                           interpolation=cv2.INTER_NEAREST)
-        region = frame[y1 + gy1:y1 + gy2, x1 + gx1:x1 + gx2]
+        gx1, gy1, _, _ = RANK_OFFSET
+        gh = int(slot_height * 0.19)
+        gw = int(gh * 0.75)
+        glyph = cv2.resize(templates[rank][0], (gw, gh), interpolation=cv2.INTER_NEAREST)
+        region = frame[y1 + gy1:y1 + gy1 + gh, x1 + gx1:x1 + gx1 + gw]
         region[glyph > 127] = (255, 255, 255)
     return frame
 
@@ -151,12 +160,15 @@ def test_a_card_offset_within_its_slot_is_still_read():
         x1, y1, x2, y2 = SLOTS[i]
         frame[y1:y2, x1:x2] = SUIT_BGR["c"]
         cv2.circle(frame, ((x1 + x2) // 2, y1 + 115), 34, (255, 255, 255), -1)
-        gx1, gy1, gx2, gy2 = RANK_OFFSET
-        glyph = cv2.resize(templates[rank][0], (gx2 - gx1, gy2 - gy1),
-                           interpolation=cv2.INTER_NEAREST)
+        gx1, gy1, _, _ = RANK_OFFSET
+        # 19% of the card's height, the median real rank glyph -- see _frame.
+        gh = int((y2 - y1) * 0.19)
+        gw = int(gh * 0.75)
+        glyph = cv2.resize(templates[rank][0], (gw, gh), interpolation=cv2.INTER_NEAREST)
         # the last card sits shifted, as the real fifth slot does
         shift = 26 if i == 2 else 0
-        region = frame[y1 + gy1:y1 + gy2, x1 + gx1 + shift:x1 + gx2 + shift]
+        region = frame[y1 + gy1:y1 + gy1 + gh,
+                       x1 + gx1 + shift:x1 + gx1 + gw + shift]
         region[glyph > 127] = (255, 255, 255)
 
     board = board_reader.read_board(frame, SLOTS, RANK_OFFSET)
@@ -218,8 +230,9 @@ def _ipad_frame(cards):
         x1, y1 = 494 + i * 132, 985
         frame[y1:y1 + 154, x1:x1 + 125] = SUIT_BGR[suit]
         cv2.circle(frame, (x1 + 62, y1 + 115), 30, (255, 255, 255), -1)   # suit pip
-        glyph = cv2.resize(templates[rank][0], (34, 37), interpolation=cv2.INTER_NEAREST)
-        region = frame[y1 + 13:y1 + 50, x1 + 14:x1 + 48]
+        # 29px is 19% of the 154px card, the median real rank glyph.
+        glyph = cv2.resize(templates[rank][0], (24, 29), interpolation=cv2.INTER_NEAREST)
+        region = frame[y1 + 13:y1 + 42, x1 + 14:x1 + 38]
         region[glyph > 127] = (255, 255, 255)
     return frame
 

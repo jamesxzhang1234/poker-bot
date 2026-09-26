@@ -890,9 +890,12 @@ def test_reads_hero_cards_out_of_the_strip():
         # Real harvested glyphs, not a drawing font: OpenCV's Hershey "K"
         # reads as a 4, which is a property of that font and nothing to do
         # with the code under test.
-        glyph = cv2.resize(rank_templates.load()[rank][0], (52, 66),
+        # 29px is 17% of the 170px card, which is what the iPad draws --
+        # measured across 558 real hero glyphs, none exceeds 22%. Filling a
+        # third of the card, as this used to, is what a card BACK looks like.
+        glyph = cv2.resize(rank_templates.load()[rank][0], (23, 29),
                            interpolation=cv2.INTER_NEAREST)
-        target = frame_img[y1 + 14:y1 + 80, x1 + 16:x1 + 68]
+        target = frame_img[y1 + 14:y1 + 43, x1 + 16:x1 + 39]
         target[glyph > 127] = (255, 255, 255)
         # The pip must stay clear of the left band sample_face_color averages.
         # Drawn oversized it reached into that band and washed the blue toward

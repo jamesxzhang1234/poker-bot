@@ -42,12 +42,18 @@ def _draw_hero_card(frame, box, rank, suit_bgr):
     """A hero hole card: colored background (suit), a double border so
     is_card_present's edge-density heuristic reliably triggers even for
     a narrow single-digit rank glyph, and a rank glyph high enough in the
-    crop for read_rank_from_top."""
+    crop for read_rank_from_top.
+
+    The inner border is a hairline on purpose. Drawn 2px thick it merged
+    with the rank glyph in the narrower of the two slots, making one
+    component as tall as the card -- which no real card produces, and which
+    the reader now rejects as a card back. The border is here for edge
+    density, not because cards have one ruled inside their edge."""
     x1, y1, x2, y2 = box
     frame[y1:y2, x1:x2] = suit_bgr
     cv2.rectangle(frame, (x1 + 2, y1 + 2), (x2 - 2, y2 - 2), (255, 255, 255), 5)
-    cv2.rectangle(frame, (x1 + 10, y1 + 10), (x2 - 10, y2 - 10), (255, 255, 255), 2)
-    cv2.putText(frame, rank, (x1 + 15, y1 + 60), cv2.FONT_HERSHEY_SIMPLEX, 2.0, (230, 230, 230), 4, cv2.LINE_AA)
+    cv2.rectangle(frame, (x1 + 10, y1 + 10), (x2 - 10, y2 - 10), (255, 255, 255), 1)
+    cv2.putText(frame, rank, (x1 + 22, y1 + 60), cv2.FONT_HERSHEY_SIMPLEX, 2.0, (230, 230, 230), 4, cv2.LINE_AA)
 
 
 def _draw_badge(frame, box, text):

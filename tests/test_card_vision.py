@@ -263,3 +263,60 @@ def test_a_dimmed_board_card_keeps_its_suit():
         ((40, 25, 21), "s"),     # a real spade in the same brightness band
     ]:
         assert card_vision.classify_suit(bgr) == suit, bgr
+
+
+def test_a_card_back_is_not_read_as_a_rank():
+    # During the deal the hero's cards arrive face down, and the back's
+    # centred logo was being isolated as though it were a rank glyph and
+    # then read -- live, a back came back as "4s" and HeroCardTracker latched
+    # it for the whole hand, because the deal happens at preflop which is
+    # exactly when the tracker is allowed to read.
+    #
+    # The rank is drawn in one fixed font, so its glyph is a consistent
+    # fraction of the card: measured over 558 real hero glyphs, every one is
+    # 12-22% of the crop's height, while the backs land at 24-38%.
+    # Sized to the measured article: the real back's logo isolated at 31% of
+    # the crop's height, which the previous bound (85% of the search window,
+    # i.e. 47% of the crop) let straight through.
+    card = np.full((170, 115, 3), (60, 45, 35), dtype=np.uint8)
+    cv2.circle(card, (57, 46), 26, (235, 235, 235), -1)   # the back's logo
+
+    assert card_vision.isolate_rank_glyph(card) is None
+
+
+def test_a_normal_rank_glyph_is_still_isolated():
+    # The counterpart: the bound above must not reject a real rank.
+    card = np.full((170, 115, 3), (160, 60, 40), dtype=np.uint8)
+    cv2.putText(card, "8", (10, 44), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 3)
+    cv2.circle(card, (58, 115), 26, (255, 255, 255), -1)
+
+    glyph = card_vision.isolate_rank_glyph(card)
+
+    assert glyph is not None
+    assert glyph.shape[0] <= 0.23 * card.shape[0]
+
+
+def _card_back():
+    """The hero's card during the deal, face down: a centred logo, no rank."""
+    card = np.full((170, 115, 3), (60, 45, 35), dtype=np.uint8)
+    cv2.circle(card, (57, 46), 26, (235, 235, 235), -1)
+    cv2.circle(card, (57, 104), 26, (235, 235, 235), -1)
+    return card
+
+
+def test_a_card_back_reads_as_no_rank_at_all():
+    # Rejecting the back's logo as a glyph is not enough on its own: the
+    # window cascade behind it then OCRs the whole top of the card and
+    # invents a rank from the logo. Live, a back read "4s" and then "5s"
+    # once the glyph was rejected. A card with no isolable rank is not a
+    # card this can read, and saying so is the only safe answer -- the deal
+    # happens at preflop, which is exactly when HeroCardTracker latches.
+    assert card_vision.read_rank_from_top(_card_back()) is None
+
+
+def test_a_real_fanned_rank_is_unaffected():
+    card = np.full((170, 115, 3), (160, 60, 40), dtype=np.uint8)
+    cv2.putText(card, "8", (10, 44), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 3)
+    cv2.circle(card, (58, 115), 26, (255, 255, 255), -1)
+
+    assert card_vision.read_rank_from_top(card) == "8"
