@@ -26,10 +26,25 @@ them.
   expensive readers are gated so they run once a hand rather than once a
   frame, and anything added to the per-frame path needs the same treatment.
 
-**The iPad is the only supported device.** The iPhone push-capture pipeline
-that preceded it lives in `archive/`, still runnable, and is described in
-`archive/__init__.py`. An iPhone-sized frame reaching the live path is now
-skipped rather than read with geometry that was never validated for it.
+**The iPad is the only device, permanently.** The iPhone is out of scope for
+good — do not add iPhone support, calibrate for it, or keep code "working on
+both devices". The retired iPhone push pipeline sits frozen in `archive/`
+(see `archive/__init__.py`): don't extend it, don't fix it, and don't treat
+its numbers as evidence for an iPad decision. Dependencies run one way only —
+`archive/` imports from `poker_vision/`, never the reverse. An iPhone-sized
+frame reaching the live path is skipped.
+
+Some leftovers still sit in `poker_vision/` and are scheduled for removal,
+not for use: `seat_anchors.IPHONE_PORTRAIT` (referenced only by a test that
+checks the iPhone size is rejected), and helpers that only `archive/parser.py`
+calls — `ocr_utils.ocr_name` / `ocr_badge` / `ocr_bubble_action` /
+`ocr_persistent_label` / `white_mask` / `label_mask` / `badge_mask`, and
+`card_vision.parse_card` / `read_rank` / `_ocr_rank` /
+`_sample_bg_color`. Comments in live code that say "both devices" or quote
+iPhone measurements are history: some thresholds (suit colours, the
+fractional distance bands in `vision_reader`) were tuned to cover both
+devices, still work on the iPad, and should not be retuned without an
+iPad-only before/after sweep.
 
 Two deliberate scope constraints that shape the code — don't "fix" them:
 
@@ -53,11 +68,11 @@ Two deliberate scope constraints that shape the code — don't "fix" them:
   The pressure to add these comes from the client, not from convenience: it
   draws the hole cards fanned and the blind badges only pre-flop, so a
   strictly per-frame reader is blind to facts that are still true.
-- **Capture: native iPad only. The push pipeline is archived.**
-  An iOS Shortcuts automation POSTs every screenshot to a local Flask server;
-  that is what `server.py` implements and it is still the only working path.
-  Two corrections to the older note here, both measured rather than assumed
-  (2026-09-24):
+- **Capture: native AVFoundation off the USB-attached iPad, nothing else.**
+  `tools/ipad_capture/capture` (Swift) opens the device, runs Apple Vision on
+  each frame, and streams JSON lines to `poker_vision.vision_live`. The old
+  screenshot-push path (iOS Shortcuts → Flask) is archived with the iPhone.
+  Two capture facts, both measured rather than assumed (2026-09-24):
 
   - **Don't go back to the QuickTime-mirror / screen-region grab.** It isn't
     blocked — it's just bad. A mirror window is bounded by the Mac display, so
@@ -86,36 +101,34 @@ source venv/bin/activate          # Python 3.9 venv at ./venv
 brew install tesseract            # OCR binary + traineddata; required for the pipeline AND the tests
 pip install -r requirements.txt   # includes tesserocr: in-process Tesseract (see Latency budget)
 
-python -m pytest tests/ archive/ -q                          # full suite (~3s)
-python -m pytest tests/ -q                                   # live path only (~2s)
-python -m pytest tests/test_table_parser.py -q               # one file
-python -m pytest tests/test_parser.py::test_infers_sb_and_bb_from_known_dealer -q   # one test
+python -m pytest tests/ -q                                   # the suite (~2s)
+python -m pytest tests/test_vision_reader.py -q              # one file
+python -m pytest tests/test_hero_cards.py::test_a_single_bad_first_read_is_never_shown -q   # one test
+python -m pytest archive/ -q                                 # frozen iPhone pipeline's own tests, if you touch shared code it imports
 ```
 
 Use `python -m pytest`, not bare `pytest` — there's no `pyproject.toml` /
 `conftest.py` pinning `pythonpath`, so bare `pytest` can't import `poker_vision`.
 
 ```bash
-python -m poker_vision.server                 # live mode: listens on 0.0.0.0:8765/upload
-python -m poker_vision.server --blinds 1/2    # also writes frames/session.json (SB/BB) for a future consumer
-curl -X POST --data-binary @some_screenshot.png http://localhost:8765/upload   # test without the phone
-
-python -m poker_vision.main --image frame.png                             # one-shot CLI
-python -m poker_vision.main --video gameplay.mp4 --fps 1 --out states.jsonl
-
-# Vision capture path (macOS only; needs the device unlocked and QuickTime closed)
+# macOS only; needs the iPad unlocked and QuickTime closed
 cd tools/ipad_capture && swiftc -O capture.swift -o capture    # build once
-tools/ipad_capture/capture --live                     # stream JSON lines from the attached device
+tools/ipad_capture/capture --live                     # stream JSON lines from the attached iPad
+tools/ipad_capture/capture --live --save-dir DIR      # also save each emitted frame (corpus for backtests)
 tools/ipad_capture/capture --dir frames/ipad          # replay saved frames (backtests, calibration)
 tools/ipad_capture/capture --dir frames/ipad --fast   # .fast recognition: ~14ms vs ~90ms, fewer detections
 
-python -m poker_vision.vision_live                    # live: spawn the helper, print table state per frame
-python -m poker_vision.vision_live --min-interval 0.5 # throttle; --fast for .fast recognition
+python -m poker_vision.vision_live                    # live: spawn the helper, dashboard redrawn in place
+python -m poker_vision.vision_live --blinds 1/2       # also writes frames/session.json (SB/BB) for a future consumer
+python -m poker_vision.vision_live --mode player      # redraw only on your turn
+python -m poker_vision.vision_live --min-interval 0.5 # throttle; --fast for .fast recognition; --text for scrolling output
 tools/ipad_capture/capture --dir frames/ipad | python -m poker_vision.vision_live --stdin   # replay
 
-python tools/region_preview.py <frame.png> <out.png>   # draw regions.py boxes over a frame to check calibration
-python tools/grid_overlay.py ...                       # pixel grid for measuring new boxes
+python tools/grid_overlay.py <frame.png> <out.png>    # pixel grid for measuring geometry off a frame
 ```
+
+`tools/region_preview.py` draws the archived iPhone `regions.py` boxes and is
+broken (it imports a `poker_vision.regions` that no longer exists). Ignore it.
 
 There's also a `start poker [SB/BB] [live|player]` zsh function in
 `~/.zshrc`. It now runs the **live Vision path** with the in-place dashboard,
@@ -127,27 +140,37 @@ blinds -- but redraws only on frames where `your_turn` is set, so the
 snapshot holds still for checking accuracy by hand. A folded hand never
 redraws. Detection checked on 54 saved frames: no false turns, 6 of 7 real
 turns caught; the miss was the raise-sizing panel (`2x 3x 4x Confirm`), by
-which point the turn had already drawn. The push server is still reachable as
-`python -m poker_vision.server`.
+which point the turn had already drawn.
 
-**Real screenshots** live in `PurePokerScreenshots/` and `frames/incoming/`.
-Both are gitignored (personal data) — use them for manual before/after
-verification of OCR changes, never as committed test fixtures.
+**Saved iPad frames** (1640x2360) live in `frames/ipad/` and
+`frames/live_debug/`; capture more with `--save-dir`. Gitignored (personal
+data) — use them for before/after verification of reader changes, never as
+committed test fixtures. `PurePokerScreenshots/`, `frames/incoming/` and
+`frames/frame_*.png` are **iPhone** frames (1206x2622) from the retired
+pipeline: the live path skips them, so they are not evidence for an iPad
+change.
 
 ## Architecture
 
 ### Data flow
 
 ```
-phone screenshot ──POST──▶ server.create_app  ──queue.Queue(path)──▶ server.worker_loop
-                                                                        │
-                                          TableParser.parse(frame) ◀────┘
-                                                │
-                              parse_seat × 9 seats ─▶ infer_positions ─▶ parse_board / parse_pot
-                                                │
-                                           TableState.to_dict()
-                                                │
-                     is_plausible_table? ──no──▶ "[skipped]"      yes ──▶ text_summary.format_summary ──▶ stdout
+iPad ──USB──▶ tools/ipad_capture/capture (Swift: AVFoundation + Apple Vision)
+                │  JSON lines: recognised text + text_mask, board_strip, hero_strip, table thumbnail
+                ▼
+        vision_live.newest_first ── drain the pipe, keep only the latest frame
+                │
+        vision_reader.parse_payload ─▶ vision_live.layout_for(w, h) ── unknown size (e.g. iPhone) ──▶ skipped
+                │
+        vision_reader.build_table_state ── seats, stacks (+ recover_stack), pot, bets, status,
+                │                          badges (+ find_mask_badges), infer_positions,
+                │                          board (board_reader.read_board), your_turn / to_call
+                ▼
+        HeroCardTracker (read_hero_cards) / PositionTracker ── keyed on hero_signature
+                │
+        TableState ── is_plausible_table? ──no──▶ not shown as a table
+                │ yes
+        dashboard.render (or text_summary.format_summary with --text) ──▶ stdout
 ```
 
 ### Latency budget
@@ -210,32 +233,31 @@ enough) before it goes in.
 
 ### Module map (why each exists — the split is intentional)
 
-| Module                                                                                                                                                                                                                                     | Owns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Consumed by                      |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| `regions.py`                                                                                                                                                                                                                               | **Pure pixel calibration.** `SEATS` (per-seat boxes), `BOARD_SLOTS`, `HERO_CARDS`, `POT_BOX`, `RANK_OFFSET`, `scale_box`, `status_sub_zones`. Nothing here has poker meaning.                                                                                                                                                                                                                                                                                                                                                | parser, card_vision, seat_layout |
-| `seat_layout.py`                                                                                                                                                                                                                           | `SEAT_ORDER` — this layout's seat-ids in *action-order direction* (D→SB→BB→UTG…). Asserts at import that it matches `regions.SEATS.keys()`.                                                                                                                                                                                                                                                                                                                                                                                  | `parser.infer_positions`         |
-| `positions.py`                                                                                                                                                                                                                             | Canonical poker position names: `MIDDLE_POSITION_NAMES` (per table size) and `POSITION_ORDER` derived from it. Generic poker knowledge, layout-agnostic.                                                                                                                                                                                                                                                                                                                                                                     | parser, text_summary             |
-| `ocr_utils.py`                                                                                                                                                                                                                             | Color-keyed text masks (`white_mask`, `name_stack_mask`, `label_mask`, `badge_mask`), the single Tesseract call site `_ocr`, and `_cascade` (try psms in order, first non-None wins). Simple readers: `ocr_name`, `ocr_badge`, `ocr_bubble_action`, `ocr_persistent_label`.                                                                                                                                                                                                                                                  | parser, number_ocr, card_vision  |
-| `number_ocr.py`                                                                                                                                                                                                                            | `ocr_number` for stacks/pot: geometric decimal-point recovery + digit-confusion recovery (`_DIGIT_CONFUSIONS`). Half the OCR complexity in the project lives here on purpose.                                                                                                                                                                                                                                                                                                                                                | parser                           |
-| `card_vision.py`                                                                                                                                                                                                                           | Suit = background color class; rank = OCR of the corner glyph. Hero cards are fanned/rotated so `parse_hero_card` uses different crop/threshold strategies than flat `parse_card`.                                                                                                                                                                                                                                                                                                                                           | parser                           |
-| `parser.py`                                                                                                                                                                                                                                | `TableParser` (per-seat orchestration: name/stack/badge/status fallback/in_hand) and `infer_positions` (fills unread positions by rotating `SEAT_ORDER` from one OCR'd badge).                                                                                                                                                                                                                                                                                                                                               | server, main                     |
-| `table_state.py`                                                                                                                                                                                                                           | `Seat` / `TableState` dataclasses; `is_plausible_table` (≥4 seats with a stack ⇒ it's a poker table, not some other phone screen).                                                                                                                                                                                                                                                                                                                                                                                           | server                           |
-| `text_summary.py`                                                                                                                                                                                                                          | stdout formatter; seats sorted by `POSITION_ORDER`, suits as symbols.                                                                                                                                                                                                                                                                                                                                                                                                                                                        | server                           |
-| `server.py`                                                                                                                                                                                                                                | Flask upload endpoint + background worker thread, joined only by a `queue.Queue` of file paths.                                                                                                                                                                                                                                                                                                                                                                                                                              | —                                |
-| `main.py`                                                                                                                                                                                                                                  | Offline CLI over image/video files.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | —                                |
-| `vision_reader.py`                                                                                                                                                                                                                         | **The Vision path.** Turns the capture helper's JSON into a `TableState`: seats, stacks, pot, status, badges, and the board. Locates text by recognition, then assigns it to a seat by proximity — no per-field boxes. Reuses `parser.infer_positions` to fill unread positions.                                                                                                                                                                                                                                             | vision_live                      |
-| `seat_anchors.py`                                                                                                                                                                                                                          | One (x, y) anchor per seat, per device: `IPAD_PORTRAIT`, `IPHONE_PORTRAIT`. Derived by clustering real frames, not hand-measured.                                                                                                                                                                                                                                                                                                                                                                                            | vision_reader, vision_live       |
-| `rank_templates.py`                                                                                                                                                                                                                        | Card ranks by template matching against stored exemplars (`data/rank_templates.npz`). Several exemplars per rank, because one set does **not** serve both devices.                                                                                                                                                                                                                                                                                                                                                           | board_reader                     |
-| `board_reader.py`                                                                                                                                                                                                                          | Reads the community board: rank from `rank_templates`, suit from `card_vision.classify_suit`. Has its own brightness-based card-presence test.                                                                                                                                                                                                                                                                                                                                                                               | vision_reader                    |
-| `rank_templates.py` (see above) and the text mask together mean **three** readers share the frame: Vision for free-form text, template matching for card ranks, Tesseract for short stacks. Each is used where the others measurably fail. |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |                                  |
-| `hero_cards.py`                                                                                                                                                                                                                            | `HeroCardTracker` — reads the hero's hole cards once a hand at preflop and holds them. Reasons solely about whether a read is still valid, and blanks rather than risk showing a stale hand.                                                                                                                                                                                                                                                                                                                                 | vision_live                      |
-| `position_tracker.py`                                                                                                                                                                                                                      | `PositionTracker` — holds the positions `infer_positions` worked out while the blind badges were up, and drops them at the next deal. The badges are a pre-flop affordance (93/143 pre-flop frames carry one against 19/98 post-flop) and the dealer button is a graphic Vision never reads, so without this 53% of frames had no position at all. One of the two sanctioned pieces of cross-frame memory.                                                                                                                   | vision_live                      |
-| `dashboard.py`                                                                                                                                                                                                                             | Renders a `TableState` as a fixed block rewritten in place, `*` marking what moved and `[HELD]` marking a stale one. Pure: state in, string out. Holds the previous state **for display only** — that memory never reaches the parser.                                                                                                                                                                                                                                                                                       | vision_live                      |
-| `vision_live.py`                                                                                                                                                                                                                           | Live runner: spawns the capture helper, turns its JSON lines into `TableState`, prints `format_summary`. Picks the anchor set from the frame size and skips a size it doesn't know rather than guessing. **No work queue on purpose** — but not for the reason first written here. This side is now the slower half (53-216ms against the helper's ~90ms), so a queue would build an unbounded backlog. `newest_first` drains the pipe and renders only the latest, which bounds lag at one parse whatever the capture rate. | —                                |
-| `tools/ipad_capture/capture.swift`                                                                                                                                                                                                         | Swift helper: sets the CoreMediaIO flag, opens the USB iOS device, runs one `VNRecognizeTextRequest` per frame, emits JSON lines. `--dir` replays saved frames, `--live` captures.                                                                                                                                                                                                                                                                                                                                           | —                                |
-| `position_inference.py`                                                                                                                                                                                                                    | `infer_positions` — names every occupied seat's position from one badge read in the same frame. Lifted out of the parser so the capture path need not import the iPhone calibration to place positions.                                                                                                                                                                                                                                                                                                                      | vision_reader                    |
-| `session.py`                                                                                                                                                                                                                               | Blind sizes typed in at launch, written to `frames/session.json` for a later consumer. Not specific to how frames arrive.                                                                                                                                                                                                                                                                                                                                                                                                    | vision_live, archive/server      |
-| **`archive/`**                                                                                                                                                                                                                             | The retired iPhone pipeline: `server.py` (Flask push), `parser.py` (fixed-region), `regions.py` (hand-measured 1206x2622 calibration), `main.py`, `overlay.py`, and their tests. Kept runnable; imports shared machinery from `poker_vision`.                                                                                                                                                                                                                                                                                | —                                |
+Three readers share each frame, each used where the others measurably fail:
+Apple Vision (in the helper) for free-form text, template matching for card
+ranks, and Tesseract on the text mask for short numbers Vision drops.
+
+| Module | Owns | Consumed by |
+|---|---|---|
+| `tools/ipad_capture/capture.swift` | Swift helper: sets the CoreMediaIO flag, opens the USB-attached iPad, runs one `VNRecognizeTextRequest` per frame, emits JSON lines with the text plus `text_mask`, `board_strip`, `hero_strip` and a table thumbnail. Rejects plate-blank frames, waits `--settle-ms`, gates on changed cells. `--live` captures, `--dir` replays saved frames. | vision_live |
+| `vision_live.py` | Live runner: spawns the helper, turns JSON lines into `TableState`, drives the trackers and the dashboard. Picks the layout from the frame size and skips a size it doesn't know (`layout_for`). **No work queue on purpose**: this side is the slower half (53-216ms against the helper's ~90ms), so `newest_first` drains the pipe and renders only the latest, bounding lag at one parse. | — |
+| `vision_reader.py` | **The reader.** `parse_payload` decodes a helper line; `build_table_state` makes the `TableState`: seats by proximity to anchors (no per-field boxes), stacks (+ `recover_stack`), pot, status, bets (+ `recover_bet`), badges (+ `find_mask_badges`), in-hand from `seat_has_cards`, `your_turn` / `to_call` from `find_action`, `table_obscured`, and the board via `board_reader`. Also `read_hero_cards` and `hero_signature` for `HeroCardTracker`. | vision_live |
+| `seat_anchors.py` | iPad layout constants: `IPAD_PORTRAIT` (one (x, y) anchor per seat, clustered from real frames), `IPAD_BET_OFFSETS`, `IPAD_BOARD_SLOTS`, `IPAD_RANK_OFFSET`, `IPAD_HERO_CARDS`, `IPAD_HERO_CARD_SLOTS`. Still holds a dead `IPHONE_PORTRAIT`; don't use it. | vision_reader, vision_live, seat_layout |
+| `seat_layout.py` | `SEAT_ORDER` — seat-ids in *action-order direction* (D→SB→BB→UTG…). Asserts at import that it matches `seat_anchors.IPAD_PORTRAIT`. | position_inference |
+| `positions.py` | Canonical poker position names: `MIDDLE_POSITION_NAMES` (per table size) and `POSITION_ORDER` derived from it. Generic poker knowledge, layout-agnostic. | position_inference, text_summary |
+| `position_inference.py` | `infer_positions` — names every occupied seat's position from the badges read in the same frame, skipping seats not dealt in (`_dealt_in`). | vision_reader |
+| `board_reader.py` | Reads the community board: rank from `rank_templates`, suit from `card_vision.classify_suit` on `sample_card_color`. A matched rank is the presence test. | vision_reader |
+| `rank_templates.py` | Card ranks by template matching against stored exemplars: `data/rank_templates.npz` (flat board cards) and `data/rank_templates_fanned.npz` (hero cards). Several exemplars per rank; a few were built from retired iPhone frames and are harmless extra candidates — don't prune without an iPad before/after sweep. | board_reader, card_vision |
+| `card_vision.py` | Suit classification (`classify_suit`, `classify_hero_suit`), colour sampling, rank-glyph isolation (`isolate_rank_glyph`, `isolate_rank_pair`), and `parse_hero_card` (fanned template first, Tesseract fallback, ten check). `parse_card` / `read_rank` / `_ocr_rank` / `_sample_bg_color` are archive-only leftovers. | board_reader, vision_reader |
+| `ocr_utils.py` | `name_stack_mask`, the single Tesseract call site `_ocr` (in-process `tesserocr`, CLI fallback), and `_cascade` (try psms in order, first non-None wins). `ocr_name`, `ocr_badge`, `ocr_bubble_action`, `ocr_persistent_label`, `white_mask`, `label_mask`, `badge_mask` are archive-only leftovers. | number_ocr, card_vision |
+| `number_ocr.py` | `ocr_number`: geometric decimal-point recovery + digit-confusion recovery (`_DIGIT_CONFUSIONS`). Half the OCR complexity in the project lives here on purpose. | vision_reader (`recover_stack`) |
+| `hero_cards.py` | `HeroCardTracker` — reads the hero's hole cards on every pre-flop frame, shows them once two consecutive reads agree, and blanks rather than risk a stale hand. One of the two sanctioned pieces of cross-frame memory. | vision_live |
+| `position_tracker.py` | `PositionTracker` — holds the positions worked out while the blind badges were up, and drops them at the next deal. The other sanctioned piece of cross-frame memory. | vision_live |
+| `table_state.py` | `Seat` / `TableState` dataclasses; `is_plausible_table` (≥4 seats with a stack ⇒ a poker table, not some other screen). | everything |
+| `dashboard.py` | Renders a `TableState` as a fixed block rewritten in place, `*` marking what moved and `[HELD]` marking a stale one; `betting_line`. Pure: state in, string out. Holds the previous state **for display only** — that memory never reaches the parser. | vision_live |
+| `text_summary.py` | Scrolling formatter (`--text`); seats sorted by `POSITION_ORDER`, suits as symbols. | vision_live, dashboard |
+| `session.py` | Blind sizes typed in at launch, written to `frames/session.json` for a later consumer. | vision_live |
+| **`archive/`** | **Frozen, retired iPhone pipeline** (Flask push server, fixed-region `parser.py`, iPhone-only `regions.py`, `main.py`, `overlay.py`, their tests). Imports from `poker_vision`; nothing imports it. Don't extend or consult it. | — |
 
 ### Things that only make sense if you know the history
 
@@ -246,11 +268,6 @@ enough) before it goes in.
 - **Every OCR reader tries several Tesseract `--psm` modes** via
   `ocr_utils._cascade`. No single psm was reliable across crops; the per-site
   psm *order* is empirically tuned and documented inline — don't "normalize" them.
-- **`regions.SEATS[...]["badge"]` is always a list** of candidate boxes, even
-  for seats with one. Badges physically relocate on several seats depending on
-  whether the player holds cards (verified on 76 real sightings). Seats marked
-  "mirrored / unverified" in `regions.py` have never had a real player in the
-  sample data.
 - **`infer_positions` is deliberately conservative:** never overwrites an
   OCR'd position, never assigns a role another seat already holds, and only
   counts a seat as occupied if it has a name or stack (`in_hand` alone
@@ -258,20 +275,14 @@ enough) before it goes in.
 - **`number_ocr` recovery is whole-string-match only.** A looser version once
   fabricated a plausible wrong number from noise. If a substituted read doesn't
   resolve to clean digits end-to-end, it falls back rather than guessing.
-- **A bigger screen is not more pixels per glyph.** The iPad was expected to
-  improve OCR because its frame holds more total pixels than the iPhone's.
-  Measured over 30 native iPad frames vs 47 iPhone screenshots, the iPad is
-  *worse on every metric*: stack digits 24px vs 26px median, sub-20px rate
-  20.3% vs 19.1%, sub-16px tail 16.2% vs 11.7%. The iPad renders @2x onto an
-  820×1180pt canvas while the iPhone renders @3x onto 402×874pt, so its extra
-  pixels buy more UI area, not larger text. Don't re-derive this by switching
-  devices again — and note the corollary: **device choice and capture
-  mechanism are independent.** Native AVFoundation capture works over USB for
-  any iOS device, so hands-free capture does not require leaving the iPhone,
-  and staying on the iPhone costs no recalibration.
+- **The iPad's text is small, despite the big frame.** It renders @2x onto an
+  820×1180pt canvas, so its pixels buy UI area, not larger glyphs: measured
+  over 30 native frames, stack digits are 24px median, 20.3% fall under
+  Tesseract's usable ~20px floor and 16.2% under 16px. Small isolated glyphs
+  are the recurring failure in every reader below.
 
 - **Apple Vision replaced per-crop Tesseract on the capture path, and it is
-  both faster and more accurate.** Backtested over the same 47 iPhone frames:
+  both faster and more accurate.** Backtested over 47 frames:
   **9,305ms -> 90ms per frame (104x)**. 166 stack reads agreed, 41 disagreed;
   six disagreements were adjudicated by hand against the images and **all six
   went to Vision**. Most were Tesseract reading `3` as `2` — the gap recorded
@@ -283,36 +294,37 @@ enough) before it goes in.
   against ~6ms of actual recognition — 129 calls per frame meant ~6.4s of pure
   process overhead.
 
-- **Card ranks are template-matched, not OCR'd, and one template set does not
-  serve both devices.** The board is a closed 13-symbol alphabet in a fixed
+- **Card ranks are template-matched, not OCR'd, with several exemplars per
+  rank.** The board is a closed 13-symbol alphabet in a fixed
   font, which is what OCR handles worst: Vision reads 2/4 board ranks on a
   whole frame and *1/4* on per-card crops (an isolated glyph in a small crop
   often isn't detected as text at all), and `card_vision`'s Tesseract path
   costs ~490ms a frame. Two traps found while building the templates:
   the rank crop catches the top of the suit pip on some cards, and that
   fragment stretches the bounding box so normalising squashes the digit -- a
-  clean "5" scored 0.60 as "9" and never ranked "5" at all; and normalising
-  does **not** make an exemplar device-independent, so an iPhone-built "8"
-  lost to "3" on a clean iPad 8 while an iPad-built "10" scored 0.21 against
-  iPhone tens. Hence several exemplars per rank. Validated 15/16 cards and
-  7/8 boards against hand-checked frames.
+  clean "5" scored 0.60 as "9" and never ranked "5" at all; and one exemplar
+  per rank is not enough -- normalising does not erase differences in stroke
+  weight and proportion, so a rank's exemplar can lose to a different rank on
+  a clean card. Matching takes the best score across a rank's exemplars.
+  Some exemplars came from the retired iPhone; they are extra candidates and
+  harmless, so leave them unless an iPad before/after sweep says otherwise.
+  Validated 15/16 cards and 7/8 boards against hand-checked frames.
 
 - **`card_vision.is_card_present` false-positives on empty board slots.** It
-  keys on edge density; on IMG_8425 (pre-flop, no board at all) it reported
-  three cards, and `read_rank` then "read" a rank off dark felt -- which is
-  where the bogus 'T' samples in the first template harvest came from.
-  `board_reader.card_present` uses brightness instead: felt tops out around
-  gray 92, a card face is far brighter.
+  keys on edge density; on a pre-flop frame with no board at all it reported
+  three cards, and a rank was then "read" off dark felt -- which is where the
+  bogus 'T' samples in the first template harvest came from. The board does
+  not use it (a matched rank is the board's presence test, see the showdown
+  dimming note); only the hero-card read still calls it.
 
 - **`classify_suit` tests the brightest channel, not the sum of all three.**
-  The sum left no margin: across 163 real card backgrounds on both devices
-  spades reach a sum of 107 against the old cutoff of 110, so the *same* iPad
+  The sum left no margin: across 163 real card backgrounds spades reach a sum of 107 against the old cutoff of 110, so the *same* iPad
   spade measured 107 in one frame and 116 in the next and read `4s` then
   `4d`. By brightest channel the classes are far apart -- spades top out at 55
   and the dimmest non-spade (a club) starts at 110 -- so the threshold sits in
   an empty gap instead of on top of the data. Before/after sweep: 163
   backgrounds, 8 changed, all `d`->`s`, all the same navy card across
-  consecutive frames of one hand, zero changes on the iPhone.
+  consecutive frames of one hand.
 
 - **Hero hole cards: read at preflop, held, invalidated on appearance.** The
   fanned pair costs ~114ms to read and changes once a hand. An empty board is
@@ -426,15 +438,12 @@ enough) before it goes in.
   `_sample_bg_color` reads the top-right corner -- which for that slot is blue
   table, so the ace of spades read as a diamond. `sample_card_color` takes the
   median of the face instead, ignoring a minority of felt for the same reason
-  it ignores the white pips. The legacy `parse_card` keeps the corner sample;
-  only the Vision path's board_reader changed.
+  it ignores the white pips. (`_sample_bg_color`, the corner sample, now
+  serves only the archived `parse_card`.)
 
 - **When hole cards clash with the board, report neither.** One of the two
   reads is wrong and nothing can tell which, so showing the pair presents an
-  impossible hand as fact. Note the iPhone hero slots in `regions.HERO_CARDS`
-  were calibrated for the legacy parser and are **not validated for the Vision
-  path** -- they misread the first card on real frames, which is what this
-  check now catches. Calibrate them before trusting hero cards on iPhone.
+  impossible hand as fact.
 
 - **Cut the rank glyph out before reading it; don't hand OCR a window.** The
   suit pips are several times larger than the rank, so a window of the card's
@@ -474,10 +483,9 @@ enough) before it goes in.
   showdown board read "As 7c Jc 6s 5s" for Ac 7c Jc 6s 8c. It now asks the
   dominant-channel questions first -- a club stays green-dominant and a heart
   red-dominant however far they dim -- and settles spades against diamonds on
-  the difference b-r, not a ratio: a ratio separates the iPad but not the
-  iPhone, whose blue sits at 2.61 against a navy of 2.28, while b-r splits
-  both devices (navy 7-25, diamonds 59-113). Hero suits: **20/20**, up from
-  14/20. Board suits: every one of 16 labelled boards, up from 5/16.
+  the difference b-r, not a ratio, because a ratio's margin proved too thin
+  to trust while b-r leaves a wide gap (navy 7-25, diamonds 59-113). Hero
+  suits: **20/20**, up from 14/20. Board suits: every one of 16 labelled boards, up from 5/16.
 
 - **Derived pixel geometry is a guess; measure it off real frames.** The iPad
   board slots were derived as pitch 136 / width 118 and looked right, because
@@ -592,13 +600,11 @@ enough) before it goes in.
 
 - **Vision never returns a bare "D".** A single character is too isolated for
   its text detector, so only "SB" and "BB" arrive. That is enough: one badge
-  anchors `parser.infer_positions`, which rotates the rest of the table into
+  anchors `infer_positions`, which rotates the rest of the table into
   place. Wiring that up took iPad position coverage from 0% to 79%, and the
   inferred labels were checked against a screenshot (D=drake81, SB=trill04,
   BB=jxz). Badges are matched to a seat by **distance** rather than separate
-  dx/dy bounds -- the horizontal offset is ~100px on both devices, which is a
-  different fraction of each one's width, while the diagonal fraction agrees
-  (8.7-9.8%).
+  dx/dy bounds (a diagonal of 8.7-9.8% of the frame).
 
 - **A locked device stays open and goes quiet; it does not disappear.**
   Tested by locking the iPad with capture running: USB configuration stays at
@@ -636,8 +642,8 @@ enough) before it goes in.
   board band (~120KB base64) as `board_strip`, with the crop rect it used in
   `board_strip_rect`. The consumer maps slots from that rect rather than
   keeping its own copy of the fractions, so the two sides cannot drift. The
-  band works for both devices because the vertical span is nearly identical
-  (0.417-0.483 of frame height on the iPad, 0.418-0.483 on the iPhone).
+  hero's cards travel the same way, as `hero_strip`, and the binary
+  `text_mask` for Tesseract recovery.
 
 - **A live stdout stream must be line-buffered.** `vision_live` reconfigures
   stdout on startup: Python block-buffers when stdout is a pipe or file, so
@@ -650,8 +656,6 @@ enough) before it goes in.
   corresponding to file N. A backtest that did this silently compared each
   engine against a *different* frame and reported 72 disagreements where there
   were 41. Payloads carry a `source` field for exactly this reason; key on it.
-  (`frames/incoming/20260921-175610-101256.jpg` is a 4-byte truncated upload —
-  evidence the push pipeline can write corrupt files.)
 
 - **The client blanks a player's plate for one screen refresh as they act,
   and the helper rejects that frame before reading it.** Seen first as the
@@ -866,26 +870,21 @@ right while every test passed.
   and the pot — so a firing invariant means "check the invariant too".
 - **No mocking anywhere.** Tests drive real code on synthetic pixel data:
   `test_number_ocr.py` draws glyph rectangles on a blank mask;
-  `test_table_parser.py` builds a full 1206x2622 frame with `cv2.putText`
-  patches in the right colors and calls `TableParser.parse_seat` end-to-end
-  through real Tesseract. Follow that pattern — if you need a controlled OCR
-  result, draw a legible patch in the mask's color band, don't stub the reader.
-- Synthetic textures placed near a status zone must stay **below** the
-  white/red mask thresholds (see `_draw_textured` in `test_table_parser.py`)
-  or they bleed into the label crop as false text.
-- `test_server.py` tests the queue seam from both sides: Flask `test_client`
-  POSTs into `create_app`, and `worker_loop` driven directly with fake parsers.
-  That's the one place fakes are appropriate (they stand in for the whole
-  parser, not for an OCR call).
+  `test_vision_reader.py` builds helper payloads from synthetic observations
+  (`_obs`) and `cv2.putText` masks and strips at the iPad's 1640x2360, and runs
+  them end-to-end through real Tesseract and template matching. Follow that
+  pattern — if you need a controlled OCR result, draw a legible patch in the mask's color band, don't stub the reader.
 - When changing OCR/calibration behavior, the established verification is a
-  **before/after sweep across all real screenshots** (gitignored dirs above),
+  **before/after sweep across all saved iPad frames** (gitignored dirs above),
   counting how many hands' output changed and eyeballing that every change is
   a correction. Report those counts.
 
 ## Docs
 
-- `docs/superpowers/specs/` and `docs/superpowers/plans/` hold the design
-  spec and implementation plan for the push-based capture pipeline.
-- `README.md`'s "How it works" section predates `number_ocr.py`,
-  `positions.py`, `seat_layout.py`, and the live server — the module map
-  above is current.
+- `docs/superpowers/specs/2026-09-24-vision-capture-design.md` is the design
+  for the current capture path (native device capture + Apple Vision).
+- `docs/superpowers/specs/2026-09-21-phone-screenshot-capture-design.md` and
+  `docs/superpowers/plans/2026-09-21-phone-screenshot-capture.md` describe
+  the retired iPhone push pipeline. History only.
+- `README.md` is a short user-facing overview; this file is the detailed,
+  current reference.

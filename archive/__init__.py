@@ -1,20 +1,18 @@
-"""The iPhone push-capture pipeline, retired but kept runnable.
+"""The retired iPhone push-capture pipeline. Frozen; do not extend.
 
 This was the whole project before native iPad capture: an iOS Shortcuts
 automation POSTed screenshots to a Flask server, and a fixed-region parser
 cropped calibrated pixel boxes out of each 1206x2622 frame and OCR'd them.
-It is superseded by poker_vision.vision_live, which is ~100x faster and more
-accurate, and the iPad is now the only supported device.
+It is superseded by poker_vision.vision_live. The iPhone is permanently out
+of scope -- the iPad is the only device this project supports or will
+support -- so nothing here should be fixed, extended, or used as evidence
+for an iPad decision. Its pixel numbers (regions.py) are iPhone-only.
 
-Kept rather than deleted so the iPhone path still exists if the cable or the
-iPad does not, and because regions.py holds the only hand-measured pixel
-calibration for that device -- expensive to reproduce.
+Dependencies run one way: this package imports shared machinery from
+poker_vision (card_vision, ocr_utils, number_ocr, positions, seat_layout,
+table_state, text_summary); nothing in poker_vision imports from here.
 
-Still runnable:
+Still runnable, for reference:
     python -m archive.server                  # Flask upload endpoint
     python -m archive.main --image frame.png  # offline CLI
-
-Its tests run with the rest of the suite. Shared machinery (card_vision,
-ocr_utils, number_ocr, positions, seat_layout, table_state, text_summary)
-stays in poker_vision and is imported from here.
 """
