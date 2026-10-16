@@ -461,3 +461,141 @@ def test_liveness_from_the_helpers_heartbeat():
     h.beat(quiet=0.1); assert h.fault() is None          # recovered
     clock[0] += 9.0
     assert "capture helper" in h.fault()                 # helper itself went silent
+
+
+from types import SimpleNamespace
+
+
+def test_frame_age_is_measured_from_the_capture_timestamp():
+    state = SimpleNamespace(timestamp_sec=1000.0)
+    assert vision_live.frame_age_ms(state, now=lambda: 1000.75) == 750.0
+
+
+def test_frame_age_is_withheld_for_a_replayed_frame():
+    # A saved frame's timestamp is from whenever it was captured; showing
+    # "3 hours behind" would be noise, not a measurement.
+    state = SimpleNamespace(timestamp_sec=1000.0)
+    assert vision_live.frame_age_ms(state, now=lambda: 1000.0 + 3 * 3600) is None
+
+
+def test_frame_age_is_withheld_for_a_timestamp_in_the_future():
+    state = SimpleNamespace(timestamp_sec=1000.0)
+    assert vision_live.frame_age_ms(state, now=lambda: 999.0) is None
+
+
+# Player mode. The bottom row as it reads on a real turn (ipad_001) and while
+# waiting with pre-action boxes up (ipad_000).
+_TURN_ROW = [{"text": t, "x": x, "y": 2300, "w": 120, "h": 40, "confidence": 1.0}
+             for t, x in (("+30s", 150), ("Fold", 500), ("Check", 820), ("Raise", 1140))]
+_WAIT_ROW = [{"text": t, "x": x, "y": 2300, "w": 120, "h": 40, "confidence": 1.0}
+             for t, x in (("Check / Fold", 400), ("Call any", 820), ("Straddle", 1140))]
+_SEAT = [
+    {"text": "drake81", "x": 511, "y": 565, "w": 123, "h": 29, "confidence": 1.0},
+    {"text": "7.75", "x": 509, "y": 620, "w": 72, "h": 34, "confidence": 1.0},
+]
+
+
+def _frame(index, row):
+    return _payload(index=index, obs=_SEAT + row)
+
+
+def test_player_mode_draws_only_the_frames_where_it_is_your_turn():
+    shown = []
+    n = vision_live.run_dashboard(
+        [_frame(0, _WAIT_ROW), _frame(1, _TURN_ROW), _frame(2, _WAIT_ROW),
+         _frame(3, _WAIT_ROW), _frame(4, _TURN_ROW)],
+        draw=shown.append, turns_only=True)
+
+    assert n == 2
+    tables = [t for t in shown if "drake81" in t]
+    assert len(tables) == 2
+    assert all("YOUR TURN" in t for t in tables)
+
+
+def test_player_mode_says_a_table_was_found_before_the_first_turn():
+    # Otherwise the panel keeps claiming there is no table while one is up.
+    shown = []
+    vision_live.run_dashboard([_frame(0, _WAIT_ROW), _frame(1, _WAIT_ROW)],
+                              draw=shown.append, turns_only=True)
+
+    assert len(shown) == 1
+    assert "waiting for your turn" in shown[0]
+
+
+def test_player_mode_marks_its_snapshot_so_it_never_passes_for_live():
+    shown = []
+    vision_live.run_dashboard([_frame(0, _TURN_ROW)], draw=shown.append,
+                              turns_only=True)
+
+    assert "PLAYER MODE" in shown[-1]
+
+
+def test_live_mode_still_draws_every_frame_and_carries_no_banner():
+    shown = []
+    n = vision_live.run_dashboard([_frame(0, _WAIT_ROW), _frame(1, _TURN_ROW)],
+                                  draw=shown.append)
+
+    assert n == 2
+    assert not any("PLAYER MODE" in t for t in shown)
+
+
+def test_player_mode_still_feeds_the_trackers_on_frames_it_does_not_draw():
+    # Hole cards are read at the deal and positions while the blinds show --
+    # both usually before the turn. Skipping the parse on undrawn frames
+    # would leave them nothing to hold.
+    from poker_vision import position_tracker
+    seen = []
+
+    class Recording(position_tracker.PositionTracker):
+        def update(self, seats, signature):
+            seen.append(len(seats))
+            return super().update(seats, signature=signature)
+
+    vision_live.run_dashboard([_frame(0, _WAIT_ROW), _frame(1, _WAIT_ROW)],
+                              draw=lambda t: None, turns_only=True,
+                              position_tracker=Recording())
+
+    assert len(seen) == 2
+
+
+def _thumb_payload(index, felt, handle):
+    import base64
+    import cv2
+    import numpy as np
+    thumb = np.full((590, 410), felt, dtype=np.uint8)
+    thumb[565 // 4 - 3:565 // 4 + 3, 511 // 4 - 15:511 // 4 + 15] = handle
+    data = json.loads(_payload(index=index))
+    data["table_thumb"] = base64.b64encode(cv2.imencode(".png", thumb)[1].tobytes()).decode()
+    data["table_thumb_scale"] = 0.25
+    return json.dumps(data)
+
+
+def test_a_panel_over_the_table_holds_the_last_read_instead_of_redrawing():
+    # Read through a chat or settings panel, every player looked folded while
+    # their action bubbles still read. Hold the last clean table, and say why.
+    shown = []
+    n = vision_live.run_dashboard(
+        [_thumb_payload(0, felt=48, handle=200), _thumb_payload(1, felt=20, handle=110)],
+        draw=shown.append, stale_poll=3600)
+
+    assert n == 1
+    assert "panel is covering the table" in shown[-1]
+    assert "frame 0" in shown[-1]
+
+
+def test_an_obscured_frame_does_not_reach_the_trackers():
+    # Dimmed, the hero-card region jumps like a new deal; letting the
+    # trackers see it would discard this hand's hole cards for opening chat.
+    from poker_vision import position_tracker
+    seen = []
+
+    class Recording(position_tracker.PositionTracker):
+        def update(self, seats, signature=None):
+            seen.append(True)
+            return super().update(seats, signature=signature)
+
+    list(vision_live.iter_states(
+        [_thumb_payload(0, felt=48, handle=200), _thumb_payload(1, felt=20, handle=110)],
+        position_tracker=Recording()))
+
+    assert len(seen) == 1

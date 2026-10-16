@@ -468,16 +468,10 @@ def recover_stack(text_mask, plate, width, height):
     Tesseract is used here on purpose, and only here: it reads isolated
     glyphs, which is exactly Vision's weakness.
 
-    It is also the most expensive thing in the pipeline. Measured, not
-    estimated: ~200-245ms per call, because ocr_number runs a cascade of psm
-    attempts and each is a separate subprocess. It fires about once a frame on
-    a busy table, which takes build_table_state from 53ms to 216ms. An earlier
-    note here said ~56ms and that the cost stayed small because it runs on
-    only a handful of crops; the per-call figure was four times too low.
-
     It earns its place -- it recovers 170 of the 246 stacks it is asked about.
-    The waste is the process-per-attempt cascade, not the reading. See the
-    latency budget in CLAUDE.md before changing this.
+    It used to be the most expensive thing in the pipeline (~200-245ms a
+    call, a subprocess per psm attempt); with Tesseract held in-process by
+    ocr_utils it is ~3ms an attempt. See the latency budget in CLAUDE.md.
     """
     if text_mask is None:
         return None
@@ -500,7 +494,7 @@ def recover_stack(text_mask, plate, width, height):
 
 
 def build_table_state(payload, anchors, board_slots=None, rank_offset=None,
-                      hero_cards=None):
+                      hero_cards=None, bet_offsets=None):
     """Turn one Vision payload into a TableState.
 
     Seats, stacks, the pot and each seat's status come from the recognised
@@ -521,8 +515,6 @@ def build_table_state(payload, anchors, board_slots=None, rank_offset=None,
     plates += numeric_handle_plates(frame.observations, anchors,
                                     frame.width, frame.height)
     assigned = assign_to_seats(plates, anchors, frame.width, frame.height)
-    statuses = find_statuses(frame.observations, frame.width, frame.height)
-    badges = find_badges(frame.observations, frame.width, frame.height)
 
     # A handle sitting on a seat anchor with no stack text beneath it is the
     # case Vision cannot see: it reads the name and simply does not report a
@@ -549,8 +541,27 @@ def build_table_state(payload, anchors, board_slots=None, rank_offset=None,
                     assigned[seat_id] = candidate
                 break
 
+    # After stack recovery, so a seat recovered from the mask -- which is
+    # every all-in player, whose stack is "0" -- can still carry a label.
+    statuses = find_statuses(frame.observations, frame.width, frame.height,
+                             plates=list(assigned.values()))
+    badges = find_badges(frame.observations, frame.width, frame.height,
+                         plates=list(assigned.values()),
+                         mask_badges=find_mask_badges(frame.text_mask))
     bets = find_bets(frame.observations, assigned, frame.width, frame.height,
-                     board_slots=board_slots, hero_cards=hero_cards)
+                     board_slots=board_slots, hero_cards=hero_cards,
+                     bet_offsets=bet_offsets)
+    # A bet of "1" or "3" is a lone glyph, which Vision does not report --
+    # the same gap that loses one-character stacks. Re-read it at the seat's
+    # bet spot. Round raise sizes are exactly these, so they mattered.
+    if bet_offsets and frame.text_mask is not None:
+        for seat_id, plate in assigned.items():
+            if seat_id in bets or seat_id not in bet_offsets:
+                continue
+            dx, dy = bet_offsets[seat_id]
+            value = recover_bet(frame, plate.x + dx, plate.y + dy)
+            if value is not None:
+                bets[seat_id] = value
     action = find_action(frame.observations, frame.width, frame.height)
 
     seats = []
@@ -600,7 +611,42 @@ def build_table_state(payload, anchors, board_slots=None, rank_offset=None,
         pot=find_pot(frame.observations, frame.width, frame.height),
         your_turn=action.your_turn,
         to_call=action.to_call,
+        obscured=table_obscured(frame, plates),
     )
+
+
+# A PurePoker panel -- chat, settings, a player's profile, the achievement
+# drawer -- dims the table under it. Read through that, card backs vanish
+# into the dark and every player comes back folded while their action
+# bubbles still read: the "folded but checked" rows seen live were all this.
+# Measured over 241 saved frames: open tables put the felt at 45-53 and the
+# 95th-percentile brightness of a handle at >=175; with a panel up, felt
+# <=37 and handles <=164. Both must be dark. Felt alone would trip on a
+# different table theme, and a pop-up over the middle (the bomb-pot status
+# box) darkens the felt but leaves every seat bright and readable.
+_FELT_DIMMED = 41
+_HANDLE_DIMMED = 170
+
+
+def table_obscured(frame, plates):
+    """Whether a panel is dimming the table. False when it cannot tell."""
+    thumb, scale = frame.table_thumb, frame.table_thumb_scale
+    if thumb is None or not scale:
+        return False
+    h, w = thumb.shape[:2]
+    felt = min(float(thumb[int(.52 * h):int(.58 * h), int(.30 * w):int(.40 * w)].mean()),
+               float(thumb[int(.52 * h):int(.58 * h), int(.60 * w):int(.70 * w)].mean()))
+    if felt >= _FELT_DIMMED:
+        return False
+    peaks = []
+    for plate in plates:
+        x, y = int(plate.x * scale), int(plate.y * scale)
+        box = thumb[max(y - 5, 0):y + 5, max(x - 20, 0):x + 20]
+        if box.size:
+            peaks.append(float(np.percentile(box, 95)))
+    if not peaks:
+        return True
+    return float(np.median(peaks)) < _HANDLE_DIMMED
 
 
 # Status text the UI renders near a seat. Two kinds, and the distinction is
@@ -629,13 +675,56 @@ _STATUS_DY_MAX = 0.098
 _STATUS_DX_TOL = 0.070   # fraction of frame width
 
 
-def find_statuses(observations, width, height):
+# Labels arrive damaged in two regular ways, measured over 58 live frames.
+# The red "Folded" under an avatar is half-covered by the stack badge, so
+# Vision returns "Folde", "Folder", "Folde100" -- 46 labels dropped by an
+# exact match. And "Check" fuses with the SB/BB badge beside it into
+# "Checkв", "CheckB", "Check B" -- 10 more. Both are accepted, but only in
+# those shapes: a status word followed by anything else is chat or a
+# handle ("Betty", "Callum"), and reading those as actions would invent one.
+_CLIPPED_FOLDED = re.compile(r"^folde[a-z]?\s?\d*$")
+_BADGE_SUFFIX = re.compile(r"^[bsd]{1,2}$")
+
+
+def _status_word(text):
+    """The canonical status a recognised string names, or None."""
+    word = text.strip().lower()
+    if word in _STATUS_WORDS:
+        return _CANONICAL_STATUS[word]
+    if _CLIPPED_FOLDED.match(word):
+        return "Folded"
+    # "Sitting Out" is cut short by the stack badge too ("Sitting C" live).
+    # Nothing else on a table starts with "sitting".
+    if word.startswith("sitting ") or word == "sitting":
+        return "Sitting Out"
+    for status in _STATUS_WORDS:
+        if not word.startswith(status):
+            continue
+        # What follows must be the badge beside the bubble, in whatever
+        # letters Vision chose for it: "Checkв", "Check B", and live,
+        # "Check зв" -- 5 of 15 checks in a 4-minute capture were that shape.
+        # A "3" for the S as well ("Check3B") -- allowed only here, after a
+        # status word, so a stray "3B" elsewhere never becomes a badge.
+        rest = word[len(status):]
+        letters = rest.strip().translate(_LOOKALIKES).lower().replace("3", "s")
+        if len(rest) <= 3 and _BADGE_SUFFIX.match(letters):
+            return _CANONICAL_STATUS[status]
+    return None
+
+
+def find_statuses(observations, width, height, plates=None):
     """Map each status label onto the seat plate it belongs to.
 
     Returns {(name, x, y): status} keyed by the plate's identity, so the
     caller can match it back to whichever seat that plate was assigned.
+
+    Pass `plates` to match against the seats actually assigned. Without it
+    only plates whose stack Vision read are considered, and a player whose
+    stack is "0" -- every all-in player, a one-character number Vision does
+    not report -- had nowhere for their "All In" label to land.
     """
-    plates = find_seat_plates(observations, width, height)
+    if plates is None:
+        plates = find_seat_plates(observations, width, height)
     dy_min, dy_max = _STATUS_DY_MIN * height, _STATUS_DY_MAX * height
     dx_tol = _STATUS_DX_TOL * width
 
@@ -643,8 +732,8 @@ def find_statuses(observations, width, height):
     for o in observations:
         if o.confidence < _MIN_CONFIDENCE:
             continue
-        word = o.text.strip().lower()
-        if word not in _STATUS_WORDS:
+        status = _status_word(o.text)
+        if status is None:
             continue
         below = [
             p for p in plates
@@ -653,7 +742,12 @@ def find_statuses(observations, width, height):
         if not below:
             continue
         plate = min(below, key=lambda p: p.y - o.y)
-        out[(plate.name, plate.x, plate.y)] = _CANONICAL_STATUS[word]
+        key = (plate.name, plate.x, plate.y)
+        # A persistent label states the seat's condition; an action bubble
+        # only the last thing they did. If both are read, the label wins.
+        if out.get(key, "").lower() in _PERSISTENT_STATUS:
+            continue
+        out[key] = status
     return out
 
 
@@ -675,6 +769,7 @@ _LOOKALIKES = str.maketrans({
     "\u0455": "s", "\u0405": "S",      # Cyrillic dze
     "\u0501": "d", "\u0184": "b",      # Cyrillic komi de, Latin-ext
     "\u0392": "B", "\u03f2": "s",      # Greek beta, lunate sigma
+    "\u0437": "s", "\u0417": "S",      # Cyrillic ze -- live, "SB" came back "зв"
 })
 
 
@@ -692,12 +787,81 @@ _BADGE_DIST_MAX = 0.120
 _BADGE_DIST_MIN = 0.040
 
 
-def find_badges(observations, width, height):
+# The badges as drawn, read from the text mask rather than by Vision.
+#
+# Vision reads "SB"/"BB" only sometimes and the dealer button never -- a
+# badge is one or two letters in a tiny disc, the isolated short text it
+# misses. Live, two of four hero turns had no badge read anywhere in the
+# hand, so no positions at all. In the mask the badges are unmistakable: SB
+# and BB are ~40px white discs with the two letters cut out, the button a
+# ~42x28 flattened disc with a "D" cut out. Across 259 saved frames this
+# found a badge in 238; where Vision also read one (167), the labels never
+# disagreed; and 59 of 59 sampled detections checked by eye were right.
+#
+# Telling them apart: a B has enclosed counters, so its hole in the disc
+# holds white islands and an S's does not. Both badges end in B, which is
+# also what rejects the "zZ" sitting-out marker -- the same disc style, and
+# read as a second SB before the check was added.
+_BADGE_DISC = (34, 48)          # SB/BB disc width, px
+_BUTTON_ASPECT = (1.3, 1.8)     # the D button is flattened
+
+
+def find_mask_badges(text_mask):
+    """[TextObservation] for each badge drawn in the mask, text "SB"/"BB"/"D"."""
+    if text_mask is None:
+        return []
+    m = (text_mask > 0).astype(np.uint8)
+    count, labels, stats, centres = cv2.connectedComponentsWithStats(m, connectivity=8)
+    lo, hi = _BADGE_DISC
+    found = []
+    for k in range(1, count):
+        bx, by, bw, bh = (int(v) for v in stats[k, :4])
+        if not (lo <= bw <= hi and 22 <= bh <= hi):
+            continue
+        comp = (labels[by:by + bh, bx:bx + bw] == k).astype(np.uint8)
+        contours, hierarchy = cv2.findContours(comp, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+        if hierarchy is None:
+            continue
+        holes = [contours[i] for i, h in enumerate(hierarchy[0]) if h[3] >= 0]
+
+        def islands(hole):
+            # White shapes inside a letter's hole that are not the disc
+            # itself: the counters of a B, the inside of a D.
+            hx, hy, hw, hh = cv2.boundingRect(hole)
+            inside = np.zeros((hh, hw), np.uint8)
+            cv2.drawContours(inside, [hole - [hx, hy]], -1, 1, -1)
+            region = labels[by + hy:by + hy + hh, bx + hx:bx + hx + hw]
+            other = ((region != k) & (region > 0) & (inside > 0)).astype(np.uint8)
+            n, _, st, _ = cv2.connectedComponentsWithStats(other, connectivity=8)
+            return sum(1 for j in range(1, n) if st[j, cv2.CC_STAT_AREA] >= 6)
+
+        x, y = int(centres[k][0]), int(centres[k][1])
+        if abs(bw - bh) <= 6 and len(holes) == 2:
+            left, right = sorted(holes, key=lambda h: cv2.boundingRect(h)[0])
+            if islands(right) >= 1:
+                text = "BB" if islands(left) >= 1 else "SB"
+                found.append(TextObservation(text=text, x=x, y=y, w=bw, h=bh, confidence=1.0))
+        elif (_BUTTON_ASPECT[0] <= bw / bh <= _BUTTON_ASPECT[1]
+              and len(holes) == 1 and islands(holes[0]) == 1):
+            found.append(TextObservation(text="D", x=x, y=y, w=bw, h=bh, confidence=1.0))
+    return found
+
+
+def find_badges(observations, width, height, plates=None, mask_badges=()):
     """Map each D/SB/BB badge onto the seat plate it belongs to.
 
-    Returns {(name, x, y): badge} keyed by the plate's identity.
+    Returns {(name, x, y): badge} keyed by the plate's identity. `plates`
+    should be the assigned seats -- otherwise only plates whose stack Vision
+    read are considered, and a badge beside a one-character stack had
+    nowhere to land. `mask_badges` adds badges read from the text mask; one
+    Vision also read is counted once.
     """
-    plates = find_seat_plates(observations, width, height)
+    if plates is None:
+        plates = find_seat_plates(observations, width, height)
+    seen = [o for o in observations if _badge_word(o.text)]
+    observations = list(observations) + [
+        b for b in mask_badges
+        if not any(abs(b.x - o.x) < 40 and abs(b.y - o.y) < 40 for o in seen)]
     diagonal = (width ** 2 + height ** 2) ** 0.5
     near, far = _BADGE_DIST_MIN * diagonal, _BADGE_DIST_MAX * diagonal
 
@@ -732,8 +896,13 @@ _BET_DIST_MIN = 0.045
 _BET_DIST_MAX = 0.110
 
 
+# How far a bet's label may sit from its seat's measured spot. The spread
+# within a seat is under 40px; the nearest two seats' spots are ~300px apart.
+_BET_SPOT_TOL = 60
+
+
 def find_bets(observations, assigned, width, height, board_slots=None,
-              hero_cards=None):
+              hero_cards=None, bet_offsets=None):
     """Chips each seat has committed this street, as {seat_id: amount}.
 
     These are the amounts the UI renders on the felt between a seat and the
@@ -762,6 +931,10 @@ def find_bets(observations, assigned, width, height, board_slots=None,
         return any(x1 <= o.x <= x2 and y1 <= o.y <= y2
                    for x1, y1, x2, y2 in excluded)
 
+    # Each amount belongs to the one seat it is nearest, and each seat takes
+    # the nearest amount it was given. Letting every seat pick independently
+    # handed one pile of chips to two players -- 7 times in 58 live frames,
+    # e.g. an all-in 0.35 that also appeared as the bet of the player above.
     best = {}
     for o in observations:
         if o.confidence < _MIN_CONFIDENCE:
@@ -774,13 +947,123 @@ def find_bets(observations, assigned, width, height, board_slots=None,
             continue
         if on_the_board(o):
             continue
+        owner = None
         for seat_id, plate in assigned.items():
-            distance = ((o.x - plate.x) ** 2 + (o.y - plate.y) ** 2) ** 0.5
-            if not (near <= distance <= far):
-                continue
-            if seat_id not in best or distance < best[seat_id][0]:
-                best[seat_id] = (distance, value)
+            if bet_offsets and seat_id in bet_offsets:
+                # Measured geometry: distance from where this seat's bets go.
+                dx, dy = bet_offsets[seat_id]
+                distance = ((o.x - plate.x - dx) ** 2 + (o.y - plate.y - dy) ** 2) ** 0.5
+                fits = distance <= _BET_SPOT_TOL
+            else:
+                distance = ((o.x - plate.x) ** 2 + (o.y - plate.y) ** 2) ** 0.5
+                fits = near <= distance <= far
+            if fits and (owner is None or distance < owner[0]):
+                owner = (distance, seat_id)
+        if owner is None:
+            continue
+        distance, seat_id = owner
+        if seat_id not in best or distance < best[seat_id][0]:
+            best[seat_id] = (distance, value)
     return {seat_id: value for seat_id, (_, value) in best.items()}
+
+
+# Bet amounts are one fixed font size: 23-25px tall in every recovered bet
+# checked by eye. A card back flying past mid-deal has a logo that splits
+# into two digit-shaped halves, 27-52px tall, which OCR read as "6" and "2".
+_BET_GLYPH_H = (20 / 2360, 26 / 2360)
+
+# A bet is always drawn under a chip icon. Measured on the thumbnail, the
+# patch just above a real amount averages 74-106; above a card logo, 38-52.
+_CHIP_ABOVE_MIN = 65
+
+
+def _digit_row(window, height, glyph_h=None):
+    """Only the glyphs of the one amount nearest the window's centre.
+
+    A bet label shares its neighbourhood with the chip graphic above it,
+    sometimes a second chip, and the edge of an avatar. Handed the whole
+    window, Tesseract read "0.1" as 0.71 or 9.1 depending on where the crop
+    happened to fall. So the digits are picked out by shape -- a row of
+    digit-sized blobs sharing a baseline, plus the decimal point between
+    them -- and redrawn alone on a blank canvas.
+    """
+    n, labels, stats, centres = cv2.connectedComponentsWithStats(
+        (window > 0).astype(np.uint8), connectivity=8)
+    lo, hi = glyph_h or (_DIGIT_H_MIN, _DIGIT_H_MAX)
+    lo, hi = lo * height, hi * height
+    T, L, W, H, A = (cv2.CC_STAT_TOP, cv2.CC_STAT_LEFT, cv2.CC_STAT_WIDTH,
+                     cv2.CC_STAT_HEIGHT, cv2.CC_STAT_AREA)
+    digits = [i for i in range(1, n)
+              if lo <= stats[i, H] <= hi
+              and 0.15 <= stats[i, W] / stats[i, H] <= 1.2
+              and stats[i, A] >= 40]
+    if not digits:
+        return None
+    mid_x, mid_y = window.shape[1] / 2, window.shape[0] / 2
+    seed = min(digits, key=lambda i: abs(centres[i][1] - mid_y))
+    size, base = stats[seed, H], stats[seed, T] + stats[seed, H]
+    row = sorted((i for i in digits
+                  if abs(stats[i, T] + stats[i, H] - base) <= 0.25 * size
+                  and 0.7 * size <= stats[i, H] <= 1.3 * size),
+                 key=lambda i: stats[i, L])
+    # One amount's digits sit close together; a blob further along the same
+    # line is something else, so keep the run nearest the centre.
+    runs, run = [], [row[0]]
+    for i in row[1:]:
+        prev = run[-1]
+        if stats[i, L] - (stats[prev, L] + stats[prev, W]) > 1.2 * size:
+            runs.append(run)
+            run = [i]
+        else:
+            run.append(i)
+    runs.append(run)
+    row = min(runs, key=lambda r: min(abs(centres[i][0] - mid_x) for i in r))
+    x1 = min(stats[i, L] for i in row)
+    x2 = max(stats[i, L] + stats[i, W] for i in row)
+    top = min(stats[i, T] for i in row)
+    points = [i for i in range(1, n) if i not in row
+              and x1 <= centres[i][0] <= x2
+              and stats[i, H] <= 0.4 * size
+              and abs(stats[i, T] + stats[i, H] - base) <= 0.25 * size]
+    canvas = np.zeros_like(window)
+    for i in row + points:
+        canvas[labels == i] = 255
+    return canvas[top:base, x1:x2]
+
+
+def recover_bet(frame, x, y):
+    """Re-read a bet at its seat's spot from the text mask, or None.
+
+    Only where Vision saw no text at all: if it read something there and it
+    was not an amount -- a "+37.2" win burst, say -- that is not a bet to
+    recover. Only under a chip icon, only glyphs of the bet font's size, and
+    believed only if two readings with different padding agree: the reading
+    is sensitive to framing in exactly the cases where it is wrong.
+    """
+    mask, thumb, scale = frame.text_mask, frame.table_thumb, frame.table_thumb_scale
+    if mask is None or thumb is None or not scale:
+        return None
+    if any(abs(o.x - x) < 80 and abs(o.y - y) < 40 for o in frame.observations):
+        return None
+    chip = thumb[max(int((y - 55) * scale), 0):int((y - 20) * scale),
+                 max(int((x - 20) * scale), 0):int((x + 20) * scale)]
+    if chip.size == 0 or float(chip.mean()) < _CHIP_ABOVE_MIN:
+        return None
+    height = frame.height
+    window = mask[max(y - 40, 0):y + 40, max(x - 80, 0):x + 80]
+    if window.size == 0 or not window.any() or not looks_like_digits(window, height):
+        return None
+    glyphs = _digit_row(window, height, glyph_h=_BET_GLYPH_H)
+    if glyphs is None or glyphs.size == 0:
+        return None
+    reads = []
+    for pad in (8, 16):
+        framed = cv2.copyMakeBorder(glyphs, pad, pad, pad, pad,
+                                    cv2.BORDER_CONSTANT, value=0)
+        reads.append(number_ocr.ocr_number(cv2.cvtColor(framed, cv2.COLOR_GRAY2BGR)))
+    if reads[0] is None or reads[0] != reads[1]:
+        return None
+    return reads[0]
 
 
 def is_in_hand(status):
@@ -794,6 +1077,9 @@ def is_in_hand(status):
     if status is None:
         return False
     word = status.strip().lower()
+    if word == "all in":
+        # Persistent, but the opposite of folded: they are in to the end.
+        return True
     if word in _PERSISTENT_STATUS:
         return False
     return word in _ACTION_STATUS

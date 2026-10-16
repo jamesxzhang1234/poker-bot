@@ -23,6 +23,36 @@ def _is_occupied(seat):
 
 
 
+def _dealt_in(order, by_id):
+    """The occupied seats that are actually in the rotation this hand.
+
+    A seat can hold a name and a stack and still not be dealt in: sitting
+    out, or just sat down and waiting for the big blind. Counting it shifts
+    every inferred position after it -- live, a waiting player was named the
+    dealer. Two signals remove one, both read in this frame:
+
+      * the seat says "Sitting Out";
+      * it lies between two blinds/button that were read directly. D, SB and
+        BB go to consecutive dealt-in seats, so anyone the rotation passes
+        between them is not playing. Once the badges came from the text mask
+        as well as Vision, D/SB/BB were read together on most frames, and the
+        17 frames where they did not line up all had exactly such a player.
+    """
+    order = [sid for sid in order
+             if (by_id[sid].status or "").lower() != "sitting out"]
+    read = {by_id[sid].position: sid for sid in order
+            if by_id[sid].position in _RANK_ROLES}
+    skip = set()
+    for first, second in (("D", "SB"), ("SB", "BB")):
+        if first in read and second in read:
+            i, j = order.index(read[first]), order.index(read[second])
+            k = (i + 1) % len(order)
+            while k != j:
+                skip.add(order[k])
+                k = (k + 1) % len(order)
+    return [sid for sid in order if sid not in skip]
+
+
 def _middle_position_names(seats_between):
     if seats_between in positions.MIDDLE_POSITION_NAMES:
         return positions.MIDDLE_POSITION_NAMES[seats_between]
@@ -46,6 +76,7 @@ def infer_positions(seats):
     """
     by_id = {s.seat_id: s for s in seats}
     occupied_order = [sid for sid in seat_layout.SEAT_ORDER if sid in by_id and _is_occupied(by_id[sid])]
+    occupied_order = _dealt_in(occupied_order, by_id)
     n = len(occupied_order)
     if n < 3:
         return seats

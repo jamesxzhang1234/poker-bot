@@ -53,14 +53,62 @@ def _changed(a, b):
     return sum(abs(int(x) - int(y)) for x, y in zip(a, b)) > CHANGE_THRESHOLD
 
 
+# Consecutive pre-flop reads that must agree before a hand is shown, and
+# consecutive reads that must contradict a shown hand before it is withdrawn.
+#
+# A single read was trusted before, and checked against 24 hands labelled by
+# eye that put a wrong card on screen in 6 of them. Most were the rank reader
+# (fixed separately), but two were one bad frame followed by good ones -- an
+# 8 read as a 3 on the first pre-flop frame only -- and the first read was
+# the one kept. Reads cost ~9ms now that Tesseract stays in-process, so the
+# tracker reads on every pre-flop frame instead of once.
+AGREE = 2
+
+
 class HeroCardTracker:
+    """Shows the hero's hole cards once two reads agree; never shows a doubt.
+
+    Pre-flop, every frame is read. Nothing is shown until two consecutive
+    reads give the same two cards. Once shown, a contradicting read hides the
+    hand at once -- a doubted hand is not shown -- and an agreeing one brings
+    it back, since single-frame misreads happen. Two contradictions in a row
+    settle it, one of two ways:
+
+      * No board card has appeared since the hand was shown: we are still in
+        the same pre-flop, so this is a deal the signature missed. A live
+        deal arrived over two frames (1714, then 1266, each under the
+        threshold) because the previous hand's cards were dimmed, and the
+        old hand stayed up for 15 frames. If the two contradicting reads
+        agree with each other, they are the new hand.
+      * A board has appeared: then an "empty board" now is the run-it-once
+        showdown rendering the board elsewhere, and the reads may be of
+        cards in any state. The hand is withdrawn for the rest of it and
+        never replaced, because replacing could install a wrong one.
+    """
+
     def __init__(self):
         self.cards = []
-        self.read_this_hand = False
+        self.read_this_hand = False      # a hand has been confirmed and shown
         self._last_signature = None
+        self._candidate = None
+        self._streak = 0
+        self._doubts = 0
+        self._doubted = None
+        self._withdrawn = False
+        self._board_seen = False
+
+    def _new_hand(self):
+        self.cards = []
+        self.read_this_hand = False
+        self._candidate = None
+        self._streak = 0
+        self._doubts = 0
+        self._doubted = None
+        self._withdrawn = False
+        self._board_seen = False
 
     def update(self, board, read, signature=None):
-        """Return the hole cards to display, reading them only when needed.
+        """Return the hole cards to display.
 
         `read` is called at most once per frame and only at preflop; it returns
         a list of cards, or None/[] if none could be read. `signature` is a
@@ -73,18 +121,40 @@ class HeroCardTracker:
         # let that drift accumulate until it crossed the threshold and blanked
         # cards that were still perfectly valid.
         if self._last_signature is not None and _changed(signature, self._last_signature):
-            self.cards = []
-            self.read_this_hand = False
+            self._new_hand()
         self._last_signature = signature
 
-        if not board and not self.read_this_hand:
-            # Keep trying across preflop frames: the first can land mid-deal,
-            # before the cards are legible, and giving up there would lose them
-            # for the whole hand.
+        if board and self.read_this_hand:
+            self._board_seen = True
+
+        if not board and not self._withdrawn:
             found = read() or []
+            # A half-read or impossible pair says nothing either way: it is
+            # neither agreement nor contradiction, and the deal animation
+            # produces plenty of them.
             if _is_a_hand(found):
-                self.cards = list(found)
-                self.read_this_hand = True
+                if self.read_this_hand:
+                    if found == self.cards:
+                        self._doubts, self._doubted = 0, None
+                    else:
+                        same = found == self._doubted
+                        self._doubts = self._doubts + 1 if same or self._doubts == 0 else 1
+                        self._doubted = list(found)
+                        if self._doubts >= AGREE:
+                            if not self._board_seen and same:
+                                self.cards = list(found)        # the missed deal
+                                self._doubts, self._doubted = 0, None
+                            else:
+                                self.cards = []
+                                self._withdrawn = True
+                else:
+                    if found == self._candidate:
+                        self._streak += 1
+                    else:
+                        self._candidate, self._streak = list(found), 1
+                    if self._streak >= AGREE:
+                        self.cards = list(found)
+                        self.read_this_hand = True
 
         # A card cannot be in the board and the hand at once. When both
         # readers claim one, one of them is wrong and nothing here can tell
@@ -93,5 +163,6 @@ class HeroCardTracker:
         # and collided with the hero's real ace of diamonds.
         if self.cards and set(self.cards) & set(board):
             return []
-
+        if self._doubts:
+            return []
         return self.cards

@@ -36,6 +36,25 @@ IPAD_PORTRAIT = {
 
 IPAD_PORTRAIT_SIZE = (1640, 2360)
 
+# Where each seat's committed chips are labelled, as an offset from its plate
+# (the handle's centre). Measured from every bet Vision read across 241 saved
+# iPad frames: each seat has one spot, and the spread inside it is under 40px.
+# Bets are accepted only near their seat's spot. The distance band used
+# before took anything 129-316px from a plate, which admitted face-up card
+# ranks at showdown ("6", "5" ~160px above a seat) and strays such as "86".
+# bottom_left now has 27 sightings, so its anchor above is no longer unused.
+IPAD_BET_OFFSETS = {
+    "top_left":        (142, 131),    #  9 sightings
+    "top_right":       (-140, 135),   # 44
+    "mid_left":        (170, 12),     # 23
+    "mid_right":       (-170, 9),     # 10
+    "lower_mid_left":  (180, 0),      # 30
+    "lower_mid_right": (-170, 0),     # 32
+    "bottom_left":     (180, -104),   # 26
+    "bottom_right":    (-178, -104),  # 30
+    "hero":            (4, -269),     # 40
+}
+
 # Which seat id is the player running the capture. The hero plate is the one
 # at the bottom centre of the screen on every layout this project handles.
 HERO_SEAT_ID = "hero"

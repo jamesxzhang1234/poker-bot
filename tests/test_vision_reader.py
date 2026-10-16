@@ -1173,3 +1173,296 @@ def test_an_ocr_fragment_does_not_win_a_seat_from_a_numeric_handle():
 
     assert seat.name == "000707", "an OCR fragment beat the real handle"
     assert seat.stack == 11.2, "the username was read as the stack"
+
+
+# --- Labels arrive damaged; accept the two shapes seen live, nothing looser.
+
+def test_a_folded_label_clipped_by_the_stack_badge_still_reads_as_folded():
+    # Live: "Folde", "Folder", "Folde100", "Foldei" -- 46 labels in 58 frames.
+    for text in ("Folde", "Folder", "Folde100", "Folde 100", "Foldei"):
+        obs = [_obs(text, 404, 828), _obs("Jaimie73", 404, 895), _obs("9.45", 404, 951)]
+        assert vision_reader.find_statuses(obs, 1640, 2360) == \
+            {("Jaimie73", 404, 895): "Folded"}, text
+
+
+def test_a_check_fused_with_the_blind_badge_still_reads_as_check():
+    for text in ("Checkв", "CheckB", "Check B"):
+        obs = [_obs(text, 440, 679), _obs("Jaimie73", 404, 895), _obs("9.45", 404, 951)]
+        assert vision_reader.find_statuses(obs, 1640, 2360) == \
+            {("Jaimie73", 404, 895): "Check"}, text
+
+
+def test_words_that_merely_start_like_an_action_are_not_actions():
+    # A handle or a line of chat floating above a seat must not become a move.
+    for text in ("Betty", "Callum", "Checkmate", "fold em", "Raiser"):
+        obs = [_obs(text, 440, 679), _obs("Jaimie73", 404, 895), _obs("9.45", 404, 951)]
+        assert vision_reader.find_statuses(obs, 1640, 2360) == {}, text
+
+
+def test_the_folded_label_outranks_a_stale_action_bubble():
+    obs = [_obs("Folded", 404, 828), _obs("Check", 440, 679),
+           _obs("Jaimie73", 404, 895), _obs("9.45", 404, 951)]
+    assert vision_reader.find_statuses(obs, 1640, 2360) == {("Jaimie73", 404, 895): "Folded"}
+    obs = [_obs("Check", 440, 679), _obs("Folded", 404, 828),
+           _obs("Jaimie73", 404, 895), _obs("9.45", 404, 951)]
+    assert vision_reader.find_statuses(obs, 1640, 2360) == {("Jaimie73", 404, 895): "Folded"}
+
+
+def test_an_all_in_player_is_in_the_hand():
+    assert vision_reader.is_in_hand("All In") is True
+    assert vision_reader.is_in_hand("Folded") is False
+
+
+def test_a_status_lands_on_a_seat_whose_stack_vision_did_not_read():
+    # An all-in player's stack is "0", a single character Vision does not
+    # report, so their seat exists only as a plate recovered elsewhere. Live,
+    # five "All In" labels were dropped for want of a plate to land on.
+    plate = vision_reader.SeatPlate(name="borpa", stack=0.0, x=1231, y=898)
+    obs = [_obs("All In", 1178, 678), _obs("borpa", 1231, 898)]
+
+    assert vision_reader.find_statuses(obs, 1640, 2360) == {}
+    assert vision_reader.find_statuses(obs, 1640, 2360, plates=[plate]) == \
+        {("borpa", 1231, 898): "All In"}
+
+
+# --- One pile of chips belongs to one player.
+
+def test_one_bet_is_not_given_to_two_seats():
+    # Live frame 63: BurnerJay's all-in 0.35 sat inside JimmyJAMES's bet band
+    # too, and both seats reported it. It belongs to the nearer seat only.
+    obs = [_obs("JimmyJAMES", 1231, 1392), _obs("12.45", 1228, 1445),
+           _obs("BurnerJay", 1196, 1720), _obs("4.85", 1196, 1778),
+           _obs("0.35", 1012, 1615)]
+    assigned = vision_reader.assign_to_seats(
+        vision_reader.find_seat_plates(obs, 1640, 2360), seat_anchors_ipad(), 1640, 2360)
+
+    assert vision_reader.find_bets(obs, assigned, 1640, 2360) == {"bottom_right": 0.35}
+
+
+# --- A panel over the table.
+
+def _overlay_frame(felt, handle):
+    import numpy as np
+    from poker_vision.vision_reader import VisionFrame as Frame
+    thumb = np.full((590, 410), felt, dtype=np.uint8)
+    plate = vision_reader.SeatPlate(name="drake81", stack=7.75, x=511, y=565)
+    x, y = 511 // 4, 565 // 4
+    thumb[y - 3:y + 3, x - 15:x + 15] = handle        # the handle's white text
+    frame = Frame(frame_index=0, timestamp_sec=0.0, width=1640, height=2360,
+                  observations=[], table_thumb=thumb, table_thumb_scale=0.25)
+    return frame, [plate]
+
+
+def test_a_panel_dimming_the_table_is_detected():
+    # Measured: felt <=37 and handles <=164 with a panel up.
+    assert vision_reader.table_obscured(*_overlay_frame(felt=20, handle=110)) is True
+
+
+def test_an_open_table_is_not_obscured():
+    # Measured: felt 45-53, handles >=175.
+    assert vision_reader.table_obscured(*_overlay_frame(felt=48, handle=200)) is False
+
+
+def test_dark_felt_with_bright_handles_is_not_an_overlay():
+    # A different table theme, or a pop-up over the middle of the felt: the
+    # seats are still lit and readable, so the frame is not held back.
+    assert vision_reader.table_obscured(*_overlay_frame(felt=20, handle=200)) is False
+
+
+def test_no_thumbnail_cannot_be_called_obscured():
+    from poker_vision.vision_reader import VisionFrame as Frame
+    frame = Frame(frame_index=0, timestamp_sec=0.0, width=1640, height=2360,
+                  observations=[])
+    assert vision_reader.table_obscured(frame, []) is False
+
+
+# --- Bets live at a measured spot per seat; lone glyphs there are recovered.
+
+def _bet_frame(glyph_px=24, chip=True, vision_text=None, text="1"):
+    """A frame with Jimmy at lower_mid_right and a bet label at his spot."""
+    import numpy as np
+    import cv2
+    from poker_vision import seat_anchors
+    from poker_vision.vision_reader import VisionFrame
+    px, py = 1231, 1392                                 # his plate
+    dx, dy = seat_anchors.IPAD_BET_OFFSETS["lower_mid_right"]
+    x, y = px + dx, py + dy
+    mask = np.zeros((2360, 1640), dtype=np.uint8)
+    scale = glyph_px / 22.0
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 3)
+    cv2.putText(mask, text, (x - tw // 2, y + th // 2), cv2.FONT_HERSHEY_SIMPLEX,
+                scale, 255, 3)
+    thumb = np.full((590, 410), 45, dtype=np.uint8)
+    if chip:
+        thumb[int((y - 55) / 4):int((y - 20) / 4), int((x - 20) / 4):int((x + 20) / 4)] = 100
+    obs = [_obs("JimmyJAMES", px, py), _obs("12.45", px, py + 55)]
+    if vision_text:
+        obs.append(_obs(vision_text, x, y))
+    frame = VisionFrame(frame_index=0, timestamp_sec=0.0, width=1640, height=2360,
+                        observations=obs, text_mask=mask, table_thumb=thumb,
+                        table_thumb_scale=0.25)
+    return frame, x, y
+
+
+def test_a_lone_digit_bet_vision_missed_is_recovered():
+    # Live: a raise to "1" came back as "Raise" with no amount, three frames
+    # running -- Vision does not report a single isolated character.
+    frame, x, y = _bet_frame()
+    assert vision_reader.recover_bet(frame, x, y) == 1.0
+
+
+def test_no_chip_icon_above_means_no_bet():
+    # A card back's logo, flying past mid-deal, read as "6" and "2".
+    frame, x, y = _bet_frame(chip=False)
+    assert vision_reader.recover_bet(frame, x, y) is None
+
+
+def test_glyphs_the_wrong_size_for_the_bet_font_are_not_a_bet():
+    frame, x, y = _bet_frame(glyph_px=45)
+    assert vision_reader.recover_bet(frame, x, y) is None
+
+
+def test_no_recovery_where_vision_already_read_something_else():
+    # The "+37.2" win burst lands on the bet spot; Vision read it, and it is
+    # not an amount, so there is nothing to recover there.
+    frame, x, y = _bet_frame(vision_text="+37.2")
+    assert vision_reader.recover_bet(frame, x, y) is None
+
+
+def test_a_card_rank_above_a_seat_is_not_a_bet_once_spots_are_known():
+    # Face-up cards at showdown put a rank ~160px above a seat, inside the old
+    # distance band: "6" and "5" were reported as bets.
+    from poker_vision import seat_anchors
+    obs = [_obs("prolapsedvagina", 1123, 564), _obs("85.75", 1123, 620),
+           _obs("6", 1063, 404)]
+    assigned = vision_reader.assign_to_seats(
+        vision_reader.find_seat_plates(obs, 1640, 2360), seat_anchors_ipad(), 1640, 2360)
+
+    assert vision_reader.find_bets(obs, assigned, 1640, 2360) == {"top_right": 6.0}
+    assert vision_reader.find_bets(obs, assigned, 1640, 2360,
+                                   bet_offsets=seat_anchors.IPAD_BET_OFFSETS) == {}
+
+
+def test_a_bet_at_its_seat_spot_is_read():
+    from poker_vision import seat_anchors
+    obs = [_obs("prolapsedvagina", 1123, 564), _obs("85.75", 1123, 620),
+           _obs("0.4", 984, 696)]
+    assigned = vision_reader.assign_to_seats(
+        vision_reader.find_seat_plates(obs, 1640, 2360), seat_anchors_ipad(), 1640, 2360)
+
+    assert vision_reader.find_bets(obs, assigned, 1640, 2360,
+                                   bet_offsets=seat_anchors.IPAD_BET_OFFSETS) == {"top_right": 0.4}
+
+
+# --- Badges read from the text mask, where Vision misses them.
+
+def _badge_disc(text, at=(100, 100), size=200):
+    import numpy as np
+    import cv2
+    m = np.zeros((size, size), np.uint8)
+    cv2.circle(m, at, 20, 255, -1)                     # the light-blue disc
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+    cv2.putText(m, text, (at[0] - tw // 2, at[1] + th // 2),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, 0, 2)   # letters cut out
+    return m
+
+
+def _button(at=(100, 100), size=200):
+    import numpy as np
+    import cv2
+    m = np.zeros((size, size), np.uint8)
+    cv2.ellipse(m, at, (21, 14), 0, 0, 360, 255, -1)   # the flattened button
+    (tw, th), _ = cv2.getTextSize("D", cv2.FONT_HERSHEY_SIMPLEX, 0.7, 3)
+    cv2.putText(m, "D", (at[0] - tw // 2, at[1] + th // 2),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, 0, 3)
+    return m
+
+
+def test_blind_badges_are_read_from_the_mask():
+    assert [b.text for b in vision_reader.find_mask_badges(_badge_disc("SB"))] == ["SB"]
+    assert [b.text for b in vision_reader.find_mask_badges(_badge_disc("BB"))] == ["BB"]
+
+
+def test_the_dealer_button_is_read_from_the_mask():
+    # Vision has never returned the button -- a lone "D" is too isolated.
+    assert [b.text for b in vision_reader.find_mask_badges(_button())] == ["D"]
+
+
+def test_the_sitting_out_marker_is_not_a_blind():
+    # "zZ" is drawn in the same disc style; read as a second SB until the
+    # check that a badge's second letter is a B (closed counters).
+    assert vision_reader.find_mask_badges(_badge_disc("zZ")) == []
+
+
+def test_a_badge_lands_on_a_seat_whose_stack_vision_did_not_read():
+    # As with action labels: an all-in or one-character stack means the seat
+    # exists only via recovery, and badges used to have nowhere to land.
+    plate = vision_reader.SeatPlate(name="borpa", stack=0.0, x=1231, y=898)
+    badge = vision_reader.TextObservation(text="BB", x=1330, y=700, w=40, h=40,
+                                          confidence=1.0)
+    obs = [_obs("borpa", 1231, 898)]
+
+    assert vision_reader.find_badges(obs, 1640, 2360) == {}
+    assert vision_reader.find_badges(obs, 1640, 2360, plates=[plate],
+                                     mask_badges=[badge]) == {("borpa", 1231, 898): "BB"}
+
+
+def test_a_clipped_sitting_out_label_still_reads():
+    obs = [_obs("Sitting C", 1180, 830), _obs("borpa", 1231, 898), _obs("25", 1231, 953)]
+    assert vision_reader.find_statuses(obs, 1640, 2360) == {("borpa", 1231, 898): "Sitting Out"}
+
+
+# --- Who is dealt in, for working positions out.
+
+def _seat(sid, name, position=None, status=None):
+    from poker_vision.table_state import Seat
+    return Seat(seat_id=sid, name=name, stack=10.0, position=position, status=status)
+
+
+def test_a_player_between_the_button_and_a_blind_is_not_dealt_in():
+    # Live: a player who had just sat down sat between the button and the
+    # small blind; counting them shifted the inferred position of everyone
+    # after the big blind -- here the hero would come out HJ, not UTG.
+    from poker_vision.position_inference import infer_positions
+    seats = [_seat("top_right", "prolap", position="D"),
+             _seat("mid_right", "Lagac"),                      # waiting
+             _seat("lower_mid_right", "Jimmy", position="SB"),
+             _seat("bottom_right", "Burner", position="BB"),
+             _seat("hero", "jxz"),
+             _seat("bottom_left", "Drsbari")]
+
+    infer_positions(seats)
+
+    by = {s.name: s.position for s in seats}
+    assert by["Lagac"] is None
+    assert by["jxz"] == "UTG"
+
+
+def test_a_sitting_out_player_is_left_out_of_the_rotation():
+    from poker_vision.position_inference import infer_positions
+    seats = [_seat("top_right", "prolap", position="SB"),
+             _seat("mid_right", "borpa", status="Sitting Out"),
+             _seat("lower_mid_right", "Jimmy"),
+             _seat("bottom_right", "Burner"),
+             _seat("hero", "jxz"),
+             _seat("bottom_left", "Drsbari")]
+
+    infer_positions(seats)
+
+    by = {s.name: s.position for s in seats}
+    assert by["borpa"] is None
+    assert by["Jimmy"] == "BB"
+    assert by["Drsbari"] == "D"
+
+
+def test_a_check_fused_with_the_badge_in_any_lookalike_letters_still_reads():
+    # Live, 6 of 66 check bubbles came back with the SB badge read as "зв",
+    # "зB" or "3B" -- Cyrillic ze or a digit for the S.
+    for text in ("Check зв", "Check зB", "Check3B"):
+        obs = [_obs(text, 440, 679), _obs("Jaimie73", 404, 895), _obs("9.45", 404, 951)]
+        assert vision_reader.find_statuses(obs, 1640, 2360) == \
+            {("Jaimie73", 404, 895): "Check"}, text
+
+
+def test_a_lone_3b_is_not_a_badge():
+    assert vision_reader._badge_word("3B") is None

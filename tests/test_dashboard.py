@@ -267,3 +267,46 @@ def test_a_price_that_could_not_be_read_says_nothing_about_it():
     assert "YOUR TURN" in out
     assert "check is free" not in out
     assert "to call" not in out
+
+
+def test_footer_says_how_far_behind_the_table_the_frame_is():
+    assert "640ms behind" in render(_state([]), latency_ms=640.2)
+
+
+def test_footer_omits_the_lag_when_it_is_unknown():
+    assert "behind" not in render(_state([]), latency_ms=None)
+
+
+def test_a_raise_and_the_reraise_over_it_both_show_in_order():
+    seats = [Seat(seat_id="b", name="borpa", stack=20.0, status="Raise", bet=1.2),
+             Seat(seat_id="a", name="prolapsedvagina", stack=85.0, status="Raise", bet=0.4),
+             Seat(seat_id="c", name="JimmyJAMES", stack=14.0, status="Call", bet=1.2)]
+
+    assert "prolapsedvagina raise 0.4 -> borpa re-raise 1.2" in render(_state(seats))
+
+
+def test_a_bet_then_a_raise_reads_as_bet_then_raise():
+    seats = [Seat(seat_id="a", name="drake81", stack=7.0, status="Bet", bet=0.5),
+             Seat(seat_id="b", name="kidpokers", stack=20.0, status="Raise", bet=1.5)]
+
+    assert "drake81 bet 0.5 -> kidpokers re-raise 1.5" in render(_state(seats))
+
+
+def test_an_all_in_is_named_as_such():
+    seats = [Seat(seat_id="a", name="JimmyJAMES", stack=12.0, status="Raise", bet=3.0),
+             Seat(seat_id="b", name="BurnerJay", stack=0.0, status="All In", bet=4.85)]
+
+    assert "JimmyJAMES raise 3 -> BurnerJay all-in 4.85" in render(_state(seats))
+
+
+def test_no_action_line_when_nobody_has_bet_or_raised():
+    seats = [Seat(seat_id="a", name="drake81", stack=7.0, status="Check"),
+             Seat(seat_id="b", name="kidpokers", stack=20.0, status="Call", bet=0.1)]
+
+    assert "Action" not in render(_state(seats))
+
+
+def test_a_raise_without_a_readable_amount_is_left_out_rather_than_guessed():
+    seats = [Seat(seat_id="a", name="drake81", stack=7.0, status="Raise", bet=None)]
+
+    assert "Action" not in render(_state(seats))

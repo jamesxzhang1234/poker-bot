@@ -9,10 +9,18 @@ amounts), and red/pink (the "Folded" status label) -- and mask everything
 else out before handing a clean black-on-white image to Tesseract.
 """
 import re
+import subprocess
+import threading
 
 import cv2
 import numpy as np
 import pytesseract
+from PIL import Image
+
+try:
+    import tesserocr
+except ImportError:         # the CLI path still works, just ~54ms a call slower
+    tesserocr = None
 
 _STATUS_WORDS = ["Sitting Out", "All-in", "Check", "Call", "Raise", "Bet", "Fold"]
 _BADGE_WORDS = ["BB", "SB", "D"]  # check 2-letter badges before the 1-letter one
@@ -53,11 +61,62 @@ def label_mask(crop):
     return _mask_to_binary(white | red)
 
 
+def _tessdata_dir():
+    """Where the tesseract binary keeps its language data.
+
+    The tesserocr wheel bundles its own libtesseract but no traineddata, so it
+    is pointed at the same files the CLI uses -- the two then read identically.
+    """
+    try:
+        out = subprocess.run(["tesseract", "--list-langs"], capture_output=True,
+                             text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r'"(.+?)"', out)
+    return match.group(1) if match else None
+
+
+_local = threading.local()
+
+
+def _api():
+    """One persistent Tesseract per thread, or None to fall back to the CLI.
+
+    pytesseract spawns a process per call and that spawn, not recognition, is
+    most of the cost: ~54ms an attempt, and number_ocr's cascade makes several
+    attempts per stack. Holding the engine open removes it. The API object is
+    not thread-safe, hence one per thread.
+    """
+    if tesserocr is None:
+        return None
+    api = getattr(_local, "api", None)
+    if api is None:
+        path = _tessdata_dir()
+        api = tesserocr.PyTessBaseAPI(path=path, lang="eng") if path else \
+            tesserocr.PyTessBaseAPI(lang="eng")
+        _local.api = api
+    return api
+
+
 def _ocr(binary_img, whitelist=None, psm=6):
-    config = f"--psm {psm}"
-    if whitelist:
-        config += f" -c tessedit_char_whitelist={whitelist}"
-    return pytesseract.image_to_string(binary_img, config=config).strip()
+    api = _api()
+    if api is None:
+        config = f"--psm {psm}"
+        if whitelist:
+            config += f" -c tessedit_char_whitelist={whitelist}"
+        return pytesseract.image_to_string(binary_img, config=config).strip()
+    api.SetPageSegMode(psm)
+    # Variables persist on the engine, so an unwhitelisted call must clear
+    # the previous call's whitelist rather than inherit it.
+    api.SetVariable("tessedit_char_whitelist", whitelist or "")
+    # Same conversion pytesseract does, so both backends see one input.
+    api.SetImage(Image.fromarray(binary_img))
+    # The CLI reads pytesseract's temp PNG, which carries no resolution, and
+    # falls back to 70 dpi. In-process the engine guesses its own, and that
+    # alone changed 30 of 8,145 recorded reads -- an empty stack crop read
+    # as "5" among them. Pinning it makes the two backends agree on all.
+    api.SetSourceResolution(70)
+    return api.GetUTF8Text().strip()
 
 
 def ocr_name(crop):

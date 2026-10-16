@@ -31,6 +31,9 @@ class TableState:
     # them: one is the trigger, the other is half the pot odds.
     your_turn: bool = False
     to_call: Optional[float] = None
+    # A PurePoker panel is dimming the table; what was read through it is
+    # not trustworthy. See vision_reader.table_obscured.
+    obscured: bool = False
 
     def to_dict(self):
         return {
@@ -39,6 +42,7 @@ class TableState:
             "pot": self.pot,
             "your_turn": self.your_turn,
             "to_call": self.to_call,
+            "obscured": self.obscured,
             "board_cards": self.board_cards,
             "seats": [asdict(s) for s in self.seats],
         }

@@ -32,10 +32,15 @@ _TEMPLATE_FILE = Path(__file__).resolve().parent / "data" / "rank_templates.npz"
 _FANNED_FILE = Path(__file__).resolve().parent / "data" / "rank_templates_fanned.npz"
 
 # How well a fanned exemplar must match before it is trusted over OCR.
-# Measured across hands checked by eye: correct matches score 0.90-1.00 and
-# mistakes 0.40-0.53, so the bar sits in an empty band. Below it Tesseract
-# decides, and the two together read every one of those hands.
-FANNED_MIN_SCORE = 0.90
+# Re-measured over 354 hero cards from 24 hands labelled by eye: every match
+# scoring >=0.70 was right (201/201) while Tesseract got 21 of those same
+# cards wrong (8 as A, 8 as 3, J as A); the only wrong matches scored <=0.68
+# (a 6 as an 8). The old bar of 0.90 threw away right answers at 0.80-0.90
+# and let Tesseract's wrong ones through. 0.75 leaves margin both sides.
+# A "4" exemplar was added from the 4h-2h hand -- the only 4 in the labelled
+# set, so it is checked for stealing other cards (none) but its recall on
+# other 4s is unmeasured.
+FANNED_MIN_SCORE = 0.75
 
 TEMPLATE_SIZE = (24, 32)   # (width, height) every glyph is normalised to
 

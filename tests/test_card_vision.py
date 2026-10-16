@@ -320,3 +320,38 @@ def test_a_real_fanned_rank_is_unaffected():
     cv2.circle(card, (58, 115), 26, (255, 255, 255), -1)
 
     assert card_vision.read_rank_from_top(card) == "8"
+
+
+def test_a_ten_is_paired_even_with_the_suit_pip_further_left():
+    # On a fanned hero card the suit pip sits a few pixels left of the "1".
+    # Only the leftmost blob was ever tried as a ten's first half, so the pip
+    # was paired with nothing and the "1" and "0" beside it never looked at:
+    # 9 of 22 live hero tens were missed and read as 7 or 4 from the "1".
+    card = np.full((170, 115, 3), (160, 60, 40), dtype=np.uint8)
+    cv2.putText(card, "10", (10, 32), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 3)
+    cv2.rectangle(card, (0, 55), (22, 88), (255, 255, 255), -1)   # pip, further left
+
+    assert card_vision.isolate_rank_pair(card) is not None
+
+
+def test_a_real_fanned_ten_reads_as_a_ten():
+    # Has to be a real crop: the failure came from where the client draws
+    # the pip relative to the "1" on a fanned card. This one, Td from a live
+    # Q-T hand, read as 7d on every pre-flop frame before the fix.
+    from pathlib import Path
+    crop = cv2.imread(str(Path(__file__).parent / "data" / "ipad_hero_ten.png"))
+
+    assert card_vision.parse_hero_card(crop) == "Td"
+
+
+def test_a_dimmed_hero_card_is_not_read():
+    # The client dims your cards once you fold. Dimmed glyphs misread the
+    # same way frame after frame (a 4 as an ace), which looks like agreement.
+    # Measured: lit cards peak at 233-255 grey, dimmed ones at 88-104.
+    from pathlib import Path
+    crop = cv2.imread(str(Path(__file__).parent / "data" / "ipad_hero_ten.png"))
+    assert card_vision.parse_hero_card(crop) is not None
+
+    dimmed = (crop.astype(np.float32) * 0.4).astype(np.uint8)
+
+    assert card_vision.parse_hero_card(dimmed) is None

@@ -16,6 +16,7 @@ content hasn't changed.
 Usage:
     python -m poker_vision.vision_live
     python -m poker_vision.vision_live --fast --min-interval 0.5
+    python -m poker_vision.vision_live --mode player   # redraw only on your turn
     tools/ipad_capture/capture --dir frames/ipad | python -m poker_vision.vision_live --stdin
 """
 import argparse
@@ -38,7 +39,8 @@ from .text_summary import format_summary
 HELPER = Path(__file__).resolve().parent.parent / "tools" / "ipad_capture" / "capture"
 
 Layout = namedtuple("Layout",
-                    "anchors board_slots rank_offset hero_cards hero_card_slots")
+                    "anchors board_slots rank_offset hero_cards hero_card_slots "
+                    "bet_offsets")
 
 # Frame size -> that device's layout. Keyed on the captured resolution because
 # that is what identifies the device; a frame from anything not listed here is
@@ -54,7 +56,8 @@ _LAYOUT_BY_SIZE = {
         seat_anchors.IPAD_BOARD_SLOTS,
         seat_anchors.IPAD_RANK_OFFSET,
         seat_anchors.IPAD_HERO_CARDS,
-        seat_anchors.IPAD_HERO_CARD_SLOTS),
+        seat_anchors.IPAD_HERO_CARD_SLOTS,
+        seat_anchors.IPAD_BET_OFFSETS),
 }
 
 
@@ -108,7 +111,15 @@ def iter_states(lines, anchors=None, on_error=None, hero_tracker=None,
             line, chosen,
             board_slots=layout.board_slots if layout else None,
             rank_offset=layout.rank_offset if layout else None,
-            hero_cards=layout.hero_cards if layout else None)
+            hero_cards=layout.hero_cards if layout else None,
+            bet_offsets=layout.bet_offsets if layout else None)
+
+        # A panel dimming the table must not reach the trackers: dimmed, the
+        # hero-card region jumps like a fresh deal, so they would throw away
+        # this hand's hole cards and positions for opening the chat.
+        if state.obscured:
+            yield state
+            continue
 
         # Hole cards are read once a hand, at preflop, and held. See
         # hero_cards.HeroCardTracker for why the holding is safe.
@@ -156,6 +167,10 @@ def main():
     ap.add_argument("--min-interval", type=float, default=0.0,
                     help="seconds to wait between captured frames")
     ap.add_argument("--blinds", help="blind sizes as SB/BB, e.g. 0.05/0.1")
+    ap.add_argument("--mode", choices=("live", "player"), default="live",
+                    help="live: redraw on every frame. player: read every frame "
+                         "but redraw only when it is your turn, so the snapshot "
+                         "holds still long enough to check against the screen")
     ap.add_argument("--all-frames", action="store_true",
                     help="summarise every frame, even ones that don't look like a table")
     args = ap.parse_args()
@@ -176,10 +191,11 @@ def main():
         if args.text:
             run(sys.stdin, require_plausible=not args.all_frames)
         else:
-            run_dashboard(sys.stdin)
+            run_dashboard(sys.stdin, turns_only=args.mode == "player")
         return
 
     proc = spawn_helper(fast=args.fast, min_interval=args.min_interval)
+    banner_for = player_banner if args.mode == "player" else (lambda state: None)
 
     # The helper reports its own state on stderr -- "waiting: unlock the
     # device", "lost the device" -- and those are the messages that tell the
@@ -221,7 +237,8 @@ def main():
                     # marked HELD rather than leaving it looking live.
                     dashboard.draw_to_terminal(
                         dashboard.render(state["last"], frames=state["frames"],
-                                         status=message))
+                                         status=message,
+                                         banner=banner_for(state["last"])))
 
     threading.Thread(target=watch_stderr, daemon=True).start()
 
@@ -248,7 +265,8 @@ def main():
         else:
             run_dashboard(newest_first(proc.stdout), draw=draw,
                           on_state=remember, status_of=current_fault,
-                          liveness_of=heartbeat.fault)
+                          liveness_of=heartbeat.fault,
+                          turns_only=args.mode == "player")
     except KeyboardInterrupt:
         pass
     except Exception as exc:                # never end on a traceback
@@ -446,11 +464,46 @@ class StaleWatch:
         return self._now() - self._last > self._stale_after
 
 
+# Past this, a timestamp is not from a live capture -- a replay of saved
+# frames, say -- and an "age" would be meaningless rather than alarming.
+MAX_PLAUSIBLE_AGE = 60.0
+
+
+def frame_age_ms(state, now=time.time):
+    """How far behind the table this frame is as it is drawn, or None.
+
+    The helper stamps each frame with the moment it was captured, so this
+    covers everything after the glass: the throttle wait, Vision, and the
+    parse here. It is the number to watch when the display feels laggy.
+    """
+    age = now() - state.timestamp_sec
+    if not 0 <= age <= MAX_PLAUSIBLE_AGE:
+        return None
+    return age * 1000
+
+
+def player_banner(state):
+    """The first line of a player-mode snapshot: what it is and when.
+
+    A clock time rather than "N seconds ago", because the point of player
+    mode is that nothing redraws between turns -- a counting age would.
+    """
+    read_at = time.strftime("%H:%M:%S", time.localtime(state.timestamp_sec))
+    return f"PLAYER MODE - your turn, read at {read_at}"
+
+
 def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
                   on_state=None, status_of=None, hero_tracker=None,
                   position_tracker=None, stale_after=STALE_AFTER,
-                  stale_poll=1.0, liveness_of=None):
+                  stale_poll=1.0, liveness_of=None, turns_only=False):
     """Render each frame in place. Returns how many frames were drawn.
+
+    `turns_only` is player mode. Every frame is still parsed -- the hole-card
+    and position trackers must see the deal and the blinds as they happen, or
+    they will have nothing to show when the turn comes -- but only frames on
+    which it is your turn are drawn. Folded, nothing redraws until the next
+    hand reaches you. Faults from the helper still show, since a dead capture
+    is worth knowing about before the turn that would reveal it.
 
     Nothing in here is allowed to end the session. A bad line on stdout, a
     state that will not render -- the table is mid-hand and the next frame is
@@ -458,6 +511,8 @@ def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
     """
     previous = None
     drawn = 0
+    announced = False
+    banner = player_banner if turns_only else (lambda state: None)
     if hero_tracker is None:
         hero_tracker = hero_cards.HeroCardTracker()
     if position_tracker is None:
@@ -494,7 +549,8 @@ def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
                     draw(dashboard.render(
                         previous, frames=drawn,
                         status=reported or "no frames arriving -- "
-                                           "is the iPad awake and unlocked?"))
+                                           "is the iPad awake and unlocked?",
+                        banner=banner(previous)))
                 except Exception:
                     pass
 
@@ -504,6 +560,28 @@ def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
                                  hero_tracker=hero_tracker,
                                  position_tracker=position_tracker):
             watch.note_arrival()
+            # A panel over the table: hold the last real read, marked, rather
+            # than show a table read through the dimming.
+            if state.obscured:
+                if previous is not None:
+                    reported = status_of() if status_of else None
+                    with lock:
+                        try:
+                            draw(dashboard.render(
+                                previous, frames=drawn,
+                                status=reported or "a PurePoker panel is covering the table",
+                                banner=banner(previous)))
+                        except Exception:
+                            pass
+                continue
+            if turns_only and not state.your_turn:
+                # Say once that a table was found, so the panel does not keep
+                # claiming there is none while play goes on without us.
+                if previous is None and state.seats and not announced:
+                    with lock:
+                        draw(dashboard.render_waiting_for_turn())
+                    announced = True
+                continue
             # Tabbing away from the app, or a full-screen modal, yields a
             # frame with no table in it. Hold the last real one rather than
             # blanking the display -- but redraw it marked HELD, so a stale
@@ -519,14 +597,17 @@ def run_dashboard(lines, draw=dashboard.draw_to_terminal, status=None,
                         try:
                             draw(dashboard.render(
                                 previous, frames=drawn,
-                                status=reported or "no table on screen"))
+                                status=reported or "no table on screen",
+                                banner=banner(previous)))
                         except Exception:
                             pass
                 continue
             with lock:
                 try:
                     draw(dashboard.render(state, previous=previous,
-                                          frames=drawn + 1))
+                                          frames=drawn + 1,
+                                          latency_ms=frame_age_ms(state),
+                                          banner=banner(state)))
                 except Exception:
                     # A rendering fault must not take the capture down.
                     continue

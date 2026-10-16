@@ -135,7 +135,8 @@ struct Emitter {
     static func emit(index: Int, timestamp: Double, width: Int, height: Int,
                      observations: [(String, CGRect, Float)], source: String? = nil,
                      strip: String? = nil, mask: String? = nil,
-                     hero: String? = nil, thumb: String? = nil) {
+                     hero: String? = nil, thumb: String? = nil,
+                     stages: [String: Double]? = nil) {
         var rows: [[String: Any]] = []
         let W = Double(width), H = Double(height)
         for (text, bb, conf) in observations {
@@ -159,6 +160,7 @@ struct Emitter {
         // and anything zipping payloads against a directory listing by
         // position would silently pair every later frame with the wrong one.
         if let source = source { payload["source"] = source }
+        if let stages = stages { payload["stage_ms"] = stages }
         if let mask = mask { payload["text_mask"] = mask }
         if let strip = strip {
             payload["board_strip"] = strip
@@ -174,6 +176,9 @@ struct Emitter {
             payload["hero_strip_rect"] = [HERO_RECT.x, HERO_RECT.y,
                                           HERO_RECT.w, HERO_RECT.h]
         }
+        // When the line leaves the helper. Against timestamp_sec (capture)
+        // this splits the lag into the helper's share and the consumer's.
+        payload["emitted_sec"] = Date().timeIntervalSince1970
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let line = String(data: data, encoding: .utf8) else { return }
         print(line)
@@ -258,48 +263,267 @@ final class LiveCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate 
     // any gating, because the content-diff gate legitimately suppresses
     // emission on a static table and that must not look like starvation.
     var lastSample = Date.distantPast
-    var lastSignature: [UInt8] = []
     let ctx = CIContext()
+    // Serial: sample-buffer callbacks and the held-frame flush both run here,
+    // so neither needs a lock.
+    let queue = DispatchQueue(label: "capture")
 
     init(fast: Bool, minInterval: Double) { self.fast = fast; self.minInterval = minInterval }
 
-    /// Coarse 16x16 luma thumbnail. A poker table is static most of the time --
-    /// players are thinking -- and re-reading an unchanged frame costs the same
-    /// as reading a new one, so identical frames are dropped before Vision runs.
-    private func signature(_ cg: CGImage) -> [UInt8] {
-        var buf = [UInt8](repeating: 0, count: 16 * 16)
-        guard let space = CGColorSpace(name: CGColorSpace.linearGray),
-              let c = CGContext(data: &buf, width: 16, height: 16, bitsPerComponent: 8,
-                                bytesPerRow: 16, space: space,
-                                bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return [] }
-        c.draw(cg, in: CGRect(x: 0, y: 0, width: 16, height: 16))
-        return buf
+    /// Has the screen changed since the last read? A poker table is static
+    /// most of the time -- players are thinking -- and re-reading an unchanged
+    /// frame costs the same as reading a new one, so those are dropped before
+    /// Vision runs.
+    ///
+    /// Counted in cells, not summed. The gate used to sum a 16x16 linear-gray
+    /// thumbnail against a total of 256, and the things worth reading are
+    /// small and bright on dark felt: an action bubble, a pile of chips, a
+    /// stack going down. Replayed over 3 minutes at full rate, the frame where
+    /// the previous player's bubble and chips finished landing -- 300-600ms
+    /// into the hero's turn -- scored 44-80, so it was never read on any of 5
+    /// turns, and the session produced 26 reads in all. Six cells of the
+    /// 64x64 grid moving by 40 caught all 5 (110 reads).
+    let CHANGE_DELTA = 40
+    let CHANGE_CELLS = 6
+    var lastGrid: [Int] = []
+
+    private func changed(_ grid: [Int]) -> Bool {
+        guard grid.count == lastGrid.count, !grid.isEmpty else { return true }
+        var cells = 0
+        for i in 0..<grid.count where abs(grid[i] - lastGrid[i]) >= CHANGE_DELTA {
+            cells += 1
+            if cells >= CHANGE_CELLS { return true }
+        }
+        return false
     }
 
-    private func changed(_ sig: [UInt8]) -> Bool {
-        guard sig.count == lastSignature.count, !sig.isEmpty else { return true }
-        var diff = 0
-        for i in 0..<sig.count { diff += abs(Int(sig[i]) - Int(lastSignature[i])) }
-        return diff > 256          // ~1 luma level per cell, averaged
+    // The newest frame that arrived inside the throttle window, and when.
+    // Dropping it outright lost the trailing edge: a bet landing 0.2s after
+    // an emit, followed by a still screen, was never shown until something
+    // else moved -- the device sends frames on change, so no later frame
+    // comes along to carry it. It is held instead and read when the window
+    // closes. Only touched on the delegate's serial queue.
+    var pending: (px: CVPixelBuffer, at: Date)?
+    var flushScheduled = false
+
+    // Blink rejection. The client blanks a player's name/stack plate for
+    // exactly one screen refresh at the instant they act -- measured live at
+    // 37 fps over 3 minutes: two blanks, one frame each, back within 17-21ms.
+    // The hero's turn begins at that same instant, and the content-diff gate
+    // picked the blank out precisely because it is a big sudden change, so the
+    // player who had just acted went missing from the first frame of the turn.
+    //
+    // Waiting for the screen to hold still does not work: the turn timer and
+    // glows animate constantly, so a new frame arrives every ~18ms and nothing
+    // is ever still. Instead each frame is read only once the NEXT one has
+    // arrived, and rejected if some regions went dark for that one frame and
+    // came straight back. Dark, not just different: chips and cards sliding
+    // over the felt brighten a region for a frame, and counting those flagged
+    // 158 of 6,749 frames; darkening alone flags 14 and still catches both
+    // real blanks. Cost: one device frame (~18ms), or BLINK_WAIT on a still
+    // screen, where the last frame cannot be a blank -- one is always followed
+    // at once by the refresh that restores it.
+    let BLINK_WAIT: TimeInterval = 0.035
+    let BLINK_DROP = 25          // luma a region must lose, against both neighbours
+    let BLINK_SAME = 12          // ...while its neighbours agree with each other
+    let BLINK_CELLS = 3          // regions that must do it (the real blanks: 4 and 6)
+    var arrivals = 0
+    var before: [Int]?                                   // frame n-2
+    var candidate: (px: CVPixelBuffer, at: Date, grid: [Int])?   // frame n-1
+
+    /// 64x64 mean luma, from a 4x4 grid of samples per cell. Read straight
+    /// from the BGRA buffer, since converting every frame would cost ~18ms.
+    private func lumaGrid(_ px: CVPixelBuffer) -> [Int] {
+        CVPixelBufferLockBaseAddress(px, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(px, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(px) else { return [] }
+        let w = CVPixelBufferGetWidth(px), h = CVPixelBufferGetHeight(px)
+        let row = CVPixelBufferGetBytesPerRow(px)
+        let p = base.assumingMemoryBound(to: UInt8.self)
+        let n = 64, k = 4
+        var grid = [Int](repeating: 0, count: n * n)
+        for cy in 0..<n {
+            for cx in 0..<n {
+                var sum = 0
+                for sy in 0..<k {
+                    let y = ((cy * k + sy) * 2 + 1) * h / (n * k * 2)
+                    for sx in 0..<k {
+                        let x = ((cx * k + sx) * 2 + 1) * w / (n * k * 2)
+                        let o = y * row + x * 4                  // B, G, R, A
+                        sum += (114 * Int(p[o]) + 587 * Int(p[o + 1])
+                                + 299 * Int(p[o + 2])) / 1000
+                    }
+                }
+                grid[cy * n + cx] = sum / (k * k)
+            }
+        }
+        return grid
+    }
+
+    private func isBlink(_ a: [Int], _ b: [Int], _ c: [Int]) -> Bool {
+        guard a.count == b.count, b.count == c.count, !a.isEmpty else { return false }
+        var cells = 0
+        for i in 0..<b.count where b[i] < a[i] - BLINK_DROP && b[i] < c[i] - BLINK_DROP
+                                   && abs(a[i] - c[i]) < BLINK_SAME {
+            cells += 1
+        }
+        return cells >= BLINK_CELLS
     }
 
     func captureOutput(_ o: AVCaptureOutput, didOutput sb: CMSampleBuffer,
                        from c: AVCaptureConnection) {
-        lastSample = Date()
-        guard Date().timeIntervalSince(lastEmit) >= minInterval,
-              let px = CMSampleBufferGetImageBuffer(sb) else { return }
+        let arrived = Date()
+        lastSample = arrived
+        guard let px = CMSampleBufferGetImageBuffer(sb) else { return }
+        if saveOnly {
+            // Timing studies want every frame exactly as it arrived.
+            process(px, capturedAt: arrived)
+            return
+        }
+        let grid = lumaGrid(px)
+        var next: [Int]? = nil
+        if let held = candidate {
+            // Without the frame before it there is nothing to judge a blink
+            // against -- after a read, say, when frames were dropped -- so it
+            // is passed over; this frame gets judged next instead.
+            let reads = index
+            if let prior = before {
+                if !isBlink(prior, held.grid, grid) {
+                    offer(held.px, at: held.at)
+                } else if let dir = saveDir {
+                    // Keep the evidence, so a rejection can be checked by eye.
+                    note(String(format: "blink rejected %.0f", held.at.timeIntervalSince1970 * 1000))
+                    let ci = CIImage(cvPixelBuffer: held.px)
+                    if let cg = ctx.createCGImage(ci, from: ci.extent) {
+                        saveThumb(cg, at: held.at, dir: dir + "/blinks")
+                    }
+                }
+            }
+            // A read takes ~250ms and drops whatever arrives meanwhile, so
+            // the next arrival will not follow this one: judge it afresh.
+            next = index == reads ? held.grid : nil
+        }
+        before = next
+        candidate = (px, arrived, grid)
+        arrivals += 1
+        let generation = arrivals
+        queue.asyncAfter(deadline: .now() + BLINK_WAIT) { [weak self] in
+            guard let self = self, self.arrivals == generation,
+                  let held = self.candidate else { return }
+            // Nothing followed it: a still screen, and a blank never ends one.
+            self.candidate = nil
+            self.before = nil
+            self.offer(held.px, at: held.at)
+        }
+    }
+
+    // A settled frame, subject to the throttle.
+    // A clean frame, subject to the settle delay and the throttle. With a
+    // settle delay the frame read is not the first one after a change but
+    // the newest one SETTLE later: bubbles, chips and badges animate in over
+    // a few refreshes, and the first frame can catch them half-drawn.
+    private func offer(_ px: CVPixelBuffer, at arrived: Date) {
+        let wait = max(minInterval - Date().timeIntervalSince(lastEmit), settleDelay)
+        if wait <= 0 {
+            pending = nil
+            process(px, capturedAt: arrived)
+            return
+        }
+        // Keep only the newest; anything older is already superseded.
+        pending = (px, arrived)
+        if !flushScheduled {
+            flushScheduled = true
+            queue.asyncAfter(deadline: .now() + wait) { [weak self] in
+                guard let self = self else { return }
+                self.flushScheduled = false
+                if let held = self.pending {
+                    self.pending = nil
+                    self.process(held.px, capturedAt: held.at)
+                }
+            }
+        }
+    }
+
+    private func process(_ px: CVPixelBuffer, capturedAt: Date) {
+        let t0 = Date()
         let ci = CIImage(cvPixelBuffer: px)
         guard let cg = ctx.createCGImage(ci, from: ci.extent) else { return }
-        let sig = signature(cg)
-        guard changed(sig) else { return }
-        lastSignature = sig
+        if saveOnly, let dir = saveDir {
+            // Timing study: every frame the device sends, no settling, no
+            // Vision, no diff gate -- the gate would swallow a brief flash.
+            saveThumb(cg, at: capturedAt, dir: dir)
+            return
+        }
+        let grid = lumaGrid(px)
+        guard changed(grid) else { return }
+        lastGrid = grid
         lastEmit = Date()
+        let t1 = Date()
         let obs = recogniseText(cg, fast: fast)
-        Emitter.emit(index: index, timestamp: Date().timeIntervalSince1970,
+        let t2 = Date()
+        let strip = boardStrip(cg), mask = textMask(cg), hero = heroStrip(cg),
+            thumb = tableThumb(cg)
+        let t3 = Date()
+        // Where this frame's time went, so a slow one can be pinned on a
+        // stage instead of guessed at.
+        let ms = { (a: Date, b: Date) in (b.timeIntervalSince(a) * 1000).rounded() }
+        let stages: [String: Double] = ["held": ms(capturedAt, t0), "convert": ms(t0, t1),
+                                        "vision": ms(t1, t2), "encode": ms(t2, t3)]
+        // The time the frame was captured, not the time it was read, so the
+        // consumer can show how far behind the table it really is.
+        Emitter.emit(index: index, timestamp: capturedAt.timeIntervalSince1970,
                      width: cg.width, height: cg.height, observations: obs,
-                     strip: boardStrip(cg), mask: textMask(cg), hero: heroStrip(cg),
-                     thumb: tableThumb(cg))
+                     strip: strip, mask: mask, hero: hero, thumb: thumb, stages: stages)
+        if let dir = saveDir { saveFrame(cg, index: index, dir: dir) }
         index += 1
+        // Frames arriving while this ran were dropped, so the history no
+        // longer describes consecutive frames.
+        before = nil
+    }
+}
+
+// --save-dir: write each emitted frame to disk as <frame_index>.png, so what
+// the reader produced can be checked against what was actually on screen.
+// Diagnostic only. Encoding a full frame costs ~100ms, so it runs off the
+// capture queue rather than adding to every frame's lag.
+var saveDir: String?
+let saveQueue = DispatchQueue(label: "save")
+
+// --save-only (with --save-dir): skip recognition and save a quarter-scale
+// JPEG of every frame the device sends, named by capture time in ms. For
+// timing things on screen that are too brief for the ~4 fps the Vision path
+// manages -- e.g. how long the client hides a plate after an action.
+var saveOnly = false
+
+// --settle-ms: how long after a change to wait before reading, taking the
+// newest clean frame at that point. Default 30ms.
+var settleDelay: TimeInterval = 0.030
+
+func saveThumb(_ cg: CGImage, at: Date, dir: String) {
+    saveQueue.async {
+        let w = cg.width / 4, h = cg.height / 4
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return }
+        ctx.interpolationQuality = .medium
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let small = ctx.makeImage() else { return }
+        let rep = NSBitmapImageRep(cgImage: small)
+        guard let jpg = rep.representation(using: .jpeg,
+                                           properties: [.compressionFactor: 0.8])
+        else { return }
+        let name = String(format: "%.0f.jpg", at.timeIntervalSince1970 * 1000)
+        try? jpg.write(to: URL(fileURLWithPath: (dir as NSString).appendingPathComponent(name)))
+    }
+}
+
+func saveFrame(_ cg: CGImage, index: Int, dir: String) {
+    saveQueue.async {
+        let rep = NSBitmapImageRep(cgImage: cg)
+        guard let png = rep.representation(using: .png, properties: [:]) else { return }
+        let path = (dir as NSString).appendingPathComponent("\(index).png")
+        try? png.write(to: URL(fileURLWithPath: path))
     }
 }
 
@@ -371,7 +595,7 @@ final class Supervisor {
         // Carry the frame counter across reconnects so indices stay monotonic.
         let grabber = LiveCapture(fast: fast, minInterval: minInterval)
         grabber.index = frameIndex
-        output.setSampleBufferDelegate(grabber, queue: DispatchQueue(label: "capture"))
+        output.setSampleBufferDelegate(grabber, queue: grabber.queue)
         guard session.canAddOutput(output) else {
             complain("waiting: cannot add capture output")
             return
@@ -451,6 +675,23 @@ if let i = args.firstIndex(of: "--min-interval"), i + 1 < args.count {
     args.removeSubrange(i...(i + 1))
 }
 
+if let i = args.firstIndex(of: "--settle-ms"), i + 1 < args.count {
+    settleDelay = (Double(args[i + 1]) ?? 30) / 1000
+    args.removeSubrange(i...(i + 1))
+}
+
+if args.contains("--save-only") {
+    saveOnly = true
+    args.removeAll { $0 == "--save-only" }
+}
+
+if let i = args.firstIndex(of: "--save-dir"), i + 1 < args.count {
+    saveDir = args[i + 1]
+    try? FileManager.default.createDirectory(atPath: args[i + 1],
+                                             withIntermediateDirectories: true)
+    args.removeSubrange(i...(i + 1))
+}
+
 if let i = args.firstIndex(of: "--dir"), i + 1 < args.count {
     runDirectory(args[i + 1], fast: fast)
 } else if args.contains("--live") {
@@ -458,7 +699,7 @@ if let i = args.firstIndex(of: "--dir"), i + 1 < args.count {
 } else {
     FileHandle.standardError.write("""
     usage: capture --dir <folder> [--fast]
-           capture --live [--fast] [--min-interval <seconds>]
+           capture --live [--fast] [--min-interval <seconds>] [--settle-ms <ms>] [--save-dir <folder>]
     """.data(using: .utf8)!)
     exit(2)
 }

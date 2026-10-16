@@ -73,7 +73,38 @@ def _pot_mismatch(state):
     return sum(bets) > _POT_OVERSHOOT_FACTOR * state.pot
 
 
-def render(state, previous=None, frames=None, latency_ms=None, status=None):
+_AGGRESSIVE = ("Bet", "Raise", "All In")
+
+
+def betting_line(state):
+    """Who has put pressure on this street, in order, e.g.
+    "prolapsedvagina raise 0.4 -> borpa re-raise 1.2", or "" when nobody has.
+
+    Read from one frame, no memory. Within a betting round each player's
+    bubble stays up and their chips on the felt total what they have put in,
+    so a raise and the re-raise over it are both on screen at once: ordered
+    by amount, the smaller is the opener. The limit is honest and visible --
+    once the opener calls the re-raise, their bubble says Call and their
+    chips match, so the original 0.4 is no longer on screen and is not shown.
+    """
+    moves = sorted((s for s in state.seats
+                    if s.status in _AGGRESSIVE and s.bet is not None),
+                   key=lambda s: s.bet)
+    parts, raised = [], False
+    for seat in moves:
+        if seat.status == "All In":
+            word = "all-in"
+        elif seat.status == "Bet" and not raised:
+            word = "bet"
+        else:
+            word = "re-raise" if raised else "raise"
+        raised = raised or seat.status in ("Bet", "Raise")
+        parts.append(f"{seat.name or '?'} {word} {_amount(seat.bet)}")
+    return " -> ".join(parts)
+
+
+def render(state, previous=None, frames=None, latency_ms=None, status=None,
+           banner=None):
     """The dashboard block for one frame.
 
     `status` marks the display as HELD: the table shown is the last one that
@@ -82,6 +113,10 @@ def render(state, previous=None, frames=None, latency_ms=None, status=None):
     screen is showing something that is not a table. Saying so matters more
     than it sounds -- a frozen table that looks live is the one failure that
     could actually be acted on.
+
+    `banner` is a first line saying what kind of snapshot this is -- player
+    mode uses it, because a table that only redraws on your turn must never
+    pass for a live one.
     """
     previous_by_seat = ({s.seat_id: s for s in previous.seats} if previous else None)
 
@@ -94,6 +129,11 @@ def render(state, previous=None, frames=None, latency_ms=None, status=None):
     if status:
         header = f"  [HELD] {status}\n" + header
     lines = [header]
+    action = betting_line(state)
+    if action:
+        lines.append(f"  Action  {action}")
+    if banner:
+        lines.insert(0, f"  {banner}")
     if state.your_turn:
         # 0 and None mean different things here (see find_action): nothing
         # to call, versus a price that could not be read. "to call 0" states
@@ -128,9 +168,24 @@ def render(state, previous=None, frames=None, latency_ms=None, status=None):
     if frames is not None:
         footer += f"   {frames} captured"
     if latency_ms is not None:
-        footer += f"   {latency_ms:.0f}ms"
+        footer += f"   {latency_ms:.0f}ms behind"
     footer += "   * changed   < you   . folded"
     lines.append(footer)
+    return "\n".join(lines)
+
+
+def render_waiting_for_turn():
+    """Player mode, with a table on screen but no turn of yours seen yet.
+
+    Without this the panel would keep saying "waiting for a poker table" while
+    a table is plainly up, which reads as a broken capture.
+    """
+    lines = ["  " + "-" * _WIDTH,
+             "  PLAYER MODE - table found, waiting for your turn",
+             "",
+             "  the table is being read live; it is shown here",
+             "  only when it is your turn to act",
+             "  " + "-" * _WIDTH, "  ctrl-c to stop"]
     return "\n".join(lines)
 
 
